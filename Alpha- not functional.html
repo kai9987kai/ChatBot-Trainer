@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Advanced Chatbot (Teacher-Student Fine-Tuning)</title>
+  <title>Advanced Chatbot (Stable & Complete)</title>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.13.0/dist/tf.min.js"></script>
   <style>
     body { background-color: #111; color: #0f0; font-family: Consolas, monospace; margin: 0; padding: 0; }
@@ -20,25 +20,25 @@
 </head>
 <body>
   <div class="container">
-    <h1>Advanced Chatbot (Teacher-Student Fine-Tuning)</h1>
-    <p><em>This script combines our best features: A deep "Teacher" model with residual connections trains first. Then, a smaller "Student" model is created and **fine-tuned** using knowledge transferred from the teacher. This is a powerful, professional workflow.
+    <h1>Advanced Chatbot (Stable & Complete)</h1>
+    <p><em>This script provides a stable workflow for training two separate models: A large, deep model for maximum performance, and a smaller, efficient model for saving and deployment.
     <br><strong>CRITICAL: Performance HEAVILY depends on providing extensive and diverse training data.</strong></em></p>
 
-    <!-- SECTION 1: TRAIN & FINE-TUNE -->
+    <!-- SECTION 1: TRAIN MODELS -->
     <div>
-      <h2>1. Train "Teacher" Model</h2>
-      <button id="btnTrainLarge">Train Large "Teacher" Model</button>
+      <h2>1. Train Large Model</h2>
+      <button id="btnTrainLarge">Train Large Model</button>
       <p id="trainStatus" class="status">Status: Not trained.</p>
       
-      <h2>2. Fine-Tune "Student" Model</h2>
-      <button id="btnFineTuneSmall" disabled>Create & Fine-Tune Small "Student" Model</button>
-      <p id="smallModelStatus" class="status">Status: Waiting for Teacher model.</p>
+      <h2>2. Train Small Model</h2>
+      <button id="btnTrainSmall" disabled>Train Small Model (for Download)</button>
+      <p id="smallModelStatus" class="status">Status: Not trained.</p>
     </div>
 
     <!-- SECTION 2: DOWNLOAD MODEL -->
     <div>
       <h2>3. Download Deployed Model</h2>
-      <button id="btnSave" disabled>Download Fine-Tuned "Student" Model</button>
+      <button id="btnSave" disabled>Download Small Model</button>
     </div>
 
     <!-- SECTION 3: UPLOAD & RUN MODEL -->
@@ -58,11 +58,10 @@
 
   <script>
     // ───────────────────────── GLOBAL STATE & CONFIG ─────────────────────────
-    let largeModel=null,smallModel=null,activeModel=null;let vocab={},idf={},vocabCount=0;const N_GRAM_ORDER=2,USE_STEMMING=!0,INITIAL_LEARNING_RATE=.001,FINE_TUNE_LR=2e-4,L2_REG_STRENGTH=.005,DROPOUT_RATE=.4,MAX_NORM_CONSTRAINT_VALUE=3;let manualEsMinLoss=1/0,manualEsEpochsSinceImprovement=0;const MANUAL_ES_PATIENCE=15,MAX_EPOCHS_LARGE_MODEL=50,MAX_EPOCHS_FINE_TUNE=60;let conversationHistory=[],MAX_HISTORY_TURNS=2,SEP_TOKEN="<|>";
+    let largeModel=null,smallModel=null,activeModel=null;let vocab={},idf={},vocabCount=0;const N_GRAM_ORDER=2,USE_STEMMING=!0,INITIAL_LEARNING_RATE=.001,SMALL_MODEL_LR=0.0015,L2_REG_STRENGTH=.005,DROPOUT_RATE=.4,MAX_NORM_CONSTRAINT_VALUE=3;let manualEsMinLoss=1/0,manualEsEpochsSinceImprovement=0;const MANUAL_ES_PATIENCE=15,MAX_EPOCHS_LARGE_MODEL=50,MAX_EPOCHS_SMALL_MODEL=80;let conversationHistory=[],MAX_HISTORY_TURNS=2,SEP_TOKEN="<|>";
 
     // ───────────────────────── TRAINING DATA ─────────────────────────
-    let rawData = [
-        // START: Add your single-turn (Question/Answer) training data here.
+    let rawData=[
         { input: "hello", output: "Hi there! How can I help you today?" },
         { input: "how are you", output: "I'm an AI, functioning as expected. How about you?" },
         { input: "what is transfer learning", output: "Transfer learning is a technique where a model trained on one task is repurposed on a second, related task. It's like using knowledge from a 'teacher' model to give a 'student' model a head start." },
@@ -541,12 +540,14 @@
 { input: "Spell the word meaning “capable of being defended”;", output: "defensible" },
 { input: "Spell the word meaning “to change from liquid into vapor”;", output: "evaporate" },
 { input: "Spell the word meaning “beyond what is needed”;", output: "excessive" },
-
-  
-              { input: "whats your name?", output: "kai piper" }
-        ];
-    let conversationalRawData = [
+        {input:"hello",output:"Hi there! How can I help you today?"},
+        {input:"how are you",output:"I'm an AI, functioning as expected. How about you?"},
+        {input:"what is deep learning",output:"It's a field of machine learning using deep neural networks to learn from vast amounts of data."},
+        // END: Add your single-turn training data here.
+    ];
+    let conversationalRawData=[
         // START: Add your multi-turn conversation data here.
+        [{speaker:"user",text:"What's a neural network?"},{speaker:"bot",text:"It's a computing system inspired by the brain's structure, made of connected nodes or 'neurons'."}],
         [
             { speaker: "user", text: "What is this model's architecture?" },
             { speaker: "bot",  text: "I'm based on a deep neural network that uses residual connections, which helps in training more effectively." },
@@ -610,7 +611,7 @@
     { speaker: "bot",  text: "Sure here it is - Verse 1Ah, ah, ah, the cradle hums, ee, ee, ee, the dream begins,Fading into oh so deep, where oo within you spins.Gentle m–n like mist and noon, p and b in waves of air,Every phoneme, clear and tuned, builds pathways soft and fair.Pre-ChorusSibilant seas sighing slow,Shush the quiet underflow;Hearts in sync, we ebb and flow—Language seeds begin to grow.ChorusLa-la-la, la-ley-lah-lee,Ma-ma-mah, ba-ba-bou-boo;Chee, jee,Consonants and vowels in you.Verse 2Soft vuh ventures via velvet skies,Bright thhh threads through twilight ties.Dip-thong dance: eye, ow,In every turn, your mind will grow.BridgeWhisper r with rolling tongue,Flicker l like light among.Rhythmic pulses, stop and start—Prosody becomes your art.ChorusLa-la-la-la, lay-lee-lay-loo,Ma-ma-mah, pa-pa-puh-poo;Ng, glottal stop,All these sounds you’ll learn non-stop.OutroHuh, wuh, in lull and land,Calm y like yonder, hand in hand.Softly now, the song subsides—In your world, new language rides." },
     { speaker: "user", text: "WOAH I will sing that every day" },
     { speaker: "bot",  text: "would you like more songs?" }
-  ]    ];
+  ]      ];
     
     // ───────────────────────── DATA PROCESSING & PREPARATION ─────────────────────────
     function cleanData(dataArray,isConversational){if(!Array.isArray(dataArray)){return[]}return dataArray.filter(item=>{if(isConversational){return Array.isArray(item)&&item.length>=2&&item.every(turn=>turn&&typeof turn.speaker==="string"&&typeof turn.text==="string"&&turn.text.trim()!=="")}else{return item&&typeof item.input==="string"&&item.input.trim()!==""&&typeof item.output==="string"&&item.output.trim()!==""}})}
@@ -624,54 +625,23 @@
     // ───────────────────────── MODEL ARCHITECTURE & TRAINING ─────────────────────────
     const kernelMaxNorm=tf.constraints.maxNorm({maxValue:MAX_NORM_CONSTRAINT_VALUE});const l2Regularizer=()=>tf.regularizers.l2({l2:L2_REG_STRENGTH});
     function buildLargeModel(e){const t=tf.input({shape:[vocabCount+1]});function n(e,t,r){const o=tf.layers.dense({units:t,kernelRegularizer:l2Regularizer(),kernelConstraint:kernelMaxNorm,name:`${r}_dense`}).apply(e),a=tf.layers.batchNormalization({name:`${r}_bn`}).apply(o),i=tf.layers.reLU({name:`${r}_relu`}).apply(a),s=tf.layers.dropout({rate:DROPOUT_RATE,name:`${r}_drop`}).apply(i);let l=e;return e.shape[1]!==t&&(l=tf.layers.dense({units:t,name:`${r}_shortcut`}).apply(e)),tf.layers.add({name:`${r}_add`}).apply([s,l])}let r=tf.layers.dense({units:1024,kernelRegularizer:l2Regularizer(),kernelConstraint:kernelMaxNorm,name:"dense_initial"}).apply(t);r=tf.layers.batchNormalization({name:"bn_initial"}).apply(r),r=tf.layers.reLU({name:"relu_initial"}).apply(r),r=n(r,768,"res_block_1"),r=n(r,512,"res_block_2"),r=n(r,384,"res_block_3"),r=n(r,256,"res_block_4");const o=tf.layers.dense({units:e,activation:"softmax",name:"dense_output"}).apply(r),a=tf.model({inputs:t,outputs:o});return a.compile({optimizer:tf.train.adam(INITIAL_LEARNING_RATE),loss:"categoricalCrossentropy",metrics:["accuracy"]}),a.summary(),a}
-    function buildSmallModel(e){const t=tf.sequential();return t.add(tf.layers.dense({inputShape:[vocabCount+1],units:128,activation:"relu",name:"small_dense_1"})),t.add(tf.layers.dropout({rate:.5})),t.add(tf.layers.dense({units:64,activation:"relu",name:"small_dense_2"})),t.add(tf.layers.dense({units:e,activation:"softmax",name:"small_output"})),t.compile({optimizer:tf.train.adam(FINE_TUNE_LR),loss:"categoricalCrossentropy",metrics:["accuracy"]}),t.summary(),t}
+    function buildSmallModel(e){const t=tf.sequential();return t.add(tf.layers.dense({inputShape:[vocabCount+1],units:128,activation:"relu",name:"small_dense_1"})),t.add(tf.layers.dropout({rate:.5})),t.add(tf.layers.dense({units:64,activation:"relu",name:"small_dense_2"})),t.add(tf.layers.dense({units:e,activation:"softmax",name:"small_output"})),t.compile({optimizer:tf.train.adam(SMALL_MODEL_LR),loss:"categoricalCrossentropy",metrics:["accuracy"]}),t.summary(),t}
     function createUiCallback(model,statusElementId,modelName,maxEpochs){return{onTrainBegin:()=>{manualEsMinLoss=1/0,manualEsEpochsSinceImprovement=0,model.stopTraining=!1},onEpochEnd:(epoch,logs)=>{const acc=void 0!==logs.val_accuracy?logs.val_accuracy:logs.accuracy;document.getElementById(statusElementId).innerText=`Training ${modelName}... Ep ${epoch+1}/${maxEpochs} | Loss: ${logs.loss.toFixed(4)} | Val Acc: ${acc?acc.toFixed(3):"N/A"}`,logs.val_loss<manualEsMinLoss?(manualEsMinLoss=logs.val_loss,manualEsEpochsSinceImprovement=0):manualEsEpochsSinceImprovement++,manualEsEpochsSinceImprovement>=MANUAL_ES_PATIENCE&&(model.stopTraining=!0,document.getElementById(statusElementId).innerText+=" - Early stop.")}}}
-    async function trainLargeModel(){document.getElementById("btnTrainLarge").disabled=!0;document.getElementById("trainStatus").innerText="Status: Building vocabulary & IDF...";await tf.nextFrame();buildVocabularyAndIDF();document.getElementById("trainStatus").innerText="Status: Preparing training data...";await tf.nextFrame();const{xs,ys,numUniqueOutputs}=prepareTrainingData();if(!xs||0===xs.shape[0])return alert("Error: Training data empty or invalid."),document.getElementById("trainStatus").innerText="Status: Error - Data prep failed.",void(document.getElementById("btnTrainLarge").disabled=!1);document.getElementById("trainStatus").innerText="Status: Building large model...";await tf.nextFrame();largeModel=buildLargeModel(numUniqueOutputs);await largeModel.fit(xs,ys,{epochs:MAX_EPOCHS_LARGE_MODEL,batchSize:32,shuffle:!0,validationSplit:.1,callbacks:[createUiCallback(largeModel,"trainStatus","Large Model",MAX_EPOCHS_LARGE_MODEL)]});tf.dispose([xs,ys]);document.getElementById("trainStatus").innerText="Status: Large 'Teacher' model training complete.";document.getElementById("btnFineTuneSmall").disabled=!1;document.getElementById("btnTrainLarge").disabled=!1;activeModel=largeModel;document.getElementById("btnSend").disabled=!1;document.getElementById("loadStatus").innerText="Status: Large model is active for chat."}
-    async function fineTuneSmallModel(){if(!largeModel)return alert("Please train the large 'teacher' model first.");document.getElementById("btnFineTuneSmall").disabled=!0;document.getElementById("smallModelStatus").innerText="Status: Preparing data & building student model...";await tf.nextFrame();const{xs,ys,numUniqueOutputs}=prepareTrainingData();if(!xs||0===xs.shape[0])return alert("Error: Training data empty."),document.getElementById("smallModelStatus").innerText="Status: Error - Data prep failed.",void(document.getElementById("btnFineTuneSmall").disabled=!1);smallModel=buildSmallModel(numUniqueOutputs);console.log("Transferring knowledge from Teacher to Student model's first layer...");tf.tidy(()=>{const teacherInputLayer=largeModel.getLayer("dense_initial"),studentInputLayer=smallModel.getLayer("small_dense_1"),teacherWeights=teacherInputLayer.getWeights();if(!Array.isArray(teacherWeights)||teacherWeights.length<2)throw new Error("Could not extract weights from teacher model.");const teacherKernel=teacherWeights[0],teacherBias=teacherWeights[1],studentUnits=studentInputLayer.units,studentKernel=teacherKernel.slice([0,0],[teacherKernel.shape[0],studentUnits]),studentBias=teacherBias.slice([0],[studentUnits]);studentInputLayer.setWeights([studentKernel,studentBias])});document.getElementById("smallModelStatus").innerText="Status: Fine-tuning 'Student' model...";await smallModel.fit(xs,ys,{epochs:MAX_EPOCHS_FINE_TUNE,batchSize:64,shuffle:!0,validationSplit:.1,callbacks:[createUiCallback(smallModel,"smallModelStatus","Student Model",MAX_EPOCHS_FINE_TUNE)]});tf.dispose([xs,ys]);document.getElementById("smallModelStatus").innerText="Status: Fine-tuning complete. Student model is now active.";document.getElementById("btnSave").disabled=!1;document.getElementById("btnFineTuneSmall").disabled=!1;activeModel=smallModel;document.getElementById("loadStatus").innerText="Status: Fine-tuned student model is active."}
+    async function trainLargeModel(){document.getElementById("btnTrainLarge").disabled=!0;document.getElementById("trainStatus").innerText="Status: Building vocabulary & IDF...";await tf.nextFrame();buildVocabularyAndIDF();document.getElementById("trainStatus").innerText="Status: Preparing training data...";await tf.nextFrame();const{xs,ys,numUniqueOutputs}=prepareTrainingData();if(!xs||0===xs.shape[0])return alert("Error: Training data empty or invalid."),document.getElementById("trainStatus").innerText="Status: Error - Data prep failed.",void(document.getElementById("btnTrainLarge").disabled=!1);document.getElementById("trainStatus").innerText="Status: Building large model...";await tf.nextFrame();largeModel=buildLargeModel(numUniqueOutputs);await largeModel.fit(xs,ys,{epochs:MAX_EPOCHS_LARGE_MODEL,batchSize:32,shuffle:!0,validationSplit:.1,callbacks:[createUiCallback(largeModel,"trainStatus","Large Model",MAX_EPOCHS_LARGE_MODEL)]});tf.dispose([xs,ys]);document.getElementById("trainStatus").innerText="Status: Large model training complete.";document.getElementById("btnTrainSmall").disabled=!1;document.getElementById("btnTrainLarge").disabled=!1;activeModel=largeModel;document.getElementById("btnSend").disabled=!1;document.getElementById("loadStatus").innerText="Status: Large model is active for chat."}
+    async function trainSmallModel(){document.getElementById("btnTrainSmall").disabled=!0;document.getElementById("smallModelStatus").innerText="Status: Preparing data for small model...";await tf.nextFrame();const{xs,ys,numUniqueOutputs}=prepareTrainingData();if(!xs||0===xs.shape[0])return alert("Error: Training data empty."),document.getElementById("smallModelStatus").innerText="Status: Error - Data prep failed.",void(document.getElementById("btnTrainSmall").disabled=!1);document.getElementById("smallModelStatus").innerText="Status: Building small model...";await tf.nextFrame();smallModel=buildSmallModel(numUniqueOutputs);document.getElementById("smallModelStatus").innerText="Status: Training small model from scratch...";await smallModel.fit(xs,ys,{epochs:MAX_EPOCHS_SMALL_MODEL,batchSize:64,shuffle:!0,validationSplit:.1,callbacks:[createUiCallback(smallModel,"smallModelStatus","Small Model",MAX_EPOCHS_SMALL_MODEL)]});tf.dispose([xs,ys]);document.getElementById("smallModelStatus").innerText="Status: Small model training complete.";document.getElementById("btnSave").disabled=!1;document.getElementById("btnTrainSmall").disabled=!1;activeModel=smallModel;document.getElementById("loadStatus").innerText="Status: Small model is now active."}
     
     // ───────────────────────── UI & INTERACTION ─────────────────────────
-    async function saveModel(){if(!smallModel)return alert("Train and fine-tune the small model first.");await smallModel.save("downloads://chatbot_model");const metadata={vocab,idf,vocabCount,N_GRAM_ORDER,USE_STEMMING,SEP_TOKEN,MAX_HISTORY_TURNS,outputMap:getOutputMapping().outputMap},blob=new Blob([JSON.stringify(metadata,null,2)],{type:"application/json"}),link=document.createElement("a");link.href=URL.createObjectURL(blob),link.download="chatbot_model_metadata.json",document.body.appendChild(link),link.click(),document.body.removeChild(link)}
+    async function saveModel(){if(!smallModel)return alert("Train the small model first.");await smallModel.save("downloads://chatbot_model");const metadata={vocab,idf,vocabCount,N_GRAM_ORDER,USE_STEMMING,SEP_TOKEN,MAX_HISTORY_TURNS,outputMap:getOutputMapping().outputMap},blob=new Blob([JSON.stringify(metadata,null,2)],{type:"application/json"}),link=document.createElement("a");link.href=URL.createObjectURL(blob),link.download="chatbot_model_metadata.json",document.body.appendChild(link),link.click(),document.body.removeChild(link)}
     
-    async function loadUploadedModel() {
-        const jsonUpload = document.getElementById("upload-json").files[0];
-        const weightsUpload = document.getElementById("upload-bin").files[0];
-        if (!jsonUpload || !weightsUpload) { return alert("Please select both the JSON and the .bin file."); }
-        document.getElementById("loadStatus").innerText = "Status: Loading...";
-
-        const reader = new FileReader();
-        reader.onload = async function(event) {
-            try {
-                const modelTopology = JSON.parse(event.target.result);
-                modelTopology.weightsManifest[0].paths = [weightsUpload.name];
-                const modifiedJsonFile = new File([JSON.stringify(modelTopology)], jsonUpload.name, { type: 'application/json' });
-                const loadedModel = await tf.loadLayersModel(tf.io.browserFiles([modifiedJsonFile, weightsUpload]));
-
-                buildVocabularyAndIDF();
-                const { numUniqueOutputs } = getOutputMapping();
-                if (loadedModel.layers[0].inputShape[1] !== vocabCount + 1) throw new Error("Model vocabulary size mismatch.");
-                if (loadedModel.layers[loadedModel.layers.length - 1].units !== numUniqueOutputs) throw new Error("Model output size mismatch.");
-
-                activeModel = loadedModel;
-                conversationHistory = [];
-                document.getElementById("loadStatus").innerText = "Status: Model loaded successfully.";
-                document.getElementById("btnSend").disabled = false;
-
-            } catch (err) {
-                document.getElementById("loadStatus").innerText = "Error: " + err.message;
-                alert("Error loading model: " + err.message);
-            }
-        };
-        reader.readAsText(jsonUpload);
-    }
-
+    async function loadUploadedModel(){const jsonUpload=document.getElementById("upload-json").files[0],weightsUpload=document.getElementById("upload-bin").files[0];if(!jsonUpload||!weightsUpload)return alert("Please select both the JSON and the .bin file.");document.getElementById("loadStatus").innerText="Status: Loading...";try{const jsonPromise=new Promise((resolve,reject)=>{const reader=new FileReader;reader.onload=e=>resolve(JSON.parse(e.target.result)),reader.onerror=e=>reject(new Error("Error reading JSON file."))}),weightsPromise=new Promise((resolve,reject)=>{const reader=new FileReader;reader.onload=e=>resolve(e.target.result),reader.onerror=e=>reject(new Error("Error reading weights file.")),reader.readAsArrayBuffer(weightsUpload)});const[jsonFileObject,weightData]=await Promise.all([jsonPromise,weightsPromise]),loadedModel=await tf.loadLayersModel(tf.io.fromMemory(jsonFileObject.modelTopology,weightData,jsonFileObject.weightsManifest));buildVocabularyAndIDF();const{numUniqueOutputs}=getOutputMapping();if(loadedModel.layers[0].inputShape[1]!==vocabCount+1)throw new Error("Model vocabulary size mismatch.");if(loadedModel.layers[loadedModel.layers.length-1].units!==numUniqueOutputs)throw new Error("Model output size mismatch.");activeModel=loadedModel,conversationHistory=[],document.getElementById("loadStatus").innerText="Status: Model loaded successfully.",document.getElementById("btnSend").disabled=!1}catch(err){document.getElementById("loadStatus").innerText="Error: "+err.message,alert("Error loading model: "+err.message)}}
+    
     async function predictResponse(rawUserInput){if(!activeModel)throw new Error("No active model.");return tf.tidy(()=>{const inputTensor=tf.tensor2d([sentenceToTFIDFVector(formatHistoryForInput(conversationHistory,rawUserInput))]),probsTensor=activeModel.predict(inputTensor),classIdx=probsTensor.argMax(-1).dataSync()[0];return getOutputMapping().reverseOutputMap[classIdx]||"I'm not sure how to respond."})}
     async function sendToBot(){const userInputElement=document.getElementById("userInput"),userInputText=userInputElement.value.trim();if(!userInputText||!activeModel)return;const chatbox=document.getElementById("chatbox");chatbox.innerHTML+=`You: ${userInputText.replace(/</g,"<").replace(/>/g,">")}\n`,conversationHistory.push({speaker:"user",text:userInputText}),conversationHistory.length>2*MAX_HISTORY_TURNS&&conversationHistory.splice(0,2),chatbox.scrollTop=chatbox.scrollHeight,userInputElement.value="",document.getElementById("replyStatus").innerText="Bot is thinking…",await tf.nextFrame();try{const responseText=await predictResponse(userInputText);chatbox.innerHTML+=`Bot: ${responseText.replace(/</g,"<").replace(/>/g,">")}\n\n`,conversationHistory.push({speaker:"bot",text:responseText})}catch(err){chatbox.innerHTML+=`Bot: Error - ${err.message}\n\n`}document.getElementById("replyStatus").innerText="",chatbox.scrollTop=chatbox.scrollHeight}
     
     document.getElementById("btnTrainLarge").onclick=trainLargeModel;
-    document.getElementById("btnFineTuneSmall").onclick=fineTuneSmallModel;
+    document.getElementById("btnTrainSmall").onclick=trainSmallModel;
     document.getElementById("btnSave").onclick=saveModel;
     document.getElementById("btnLoad").onclick=loadUploadedModel;
-    document.getElementById("btnSend").onclick=sendToBot;
     document.getElementById("userInput").addEventListener("keypress",event=>{event.key==="Enter"&&!event.shiftKey&&(event.preventDefault(),sendToBot())});
     
     console.log("Advanced Chatbot UI script loaded. Ready to train.");
