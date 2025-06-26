@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Advanced Chatbot (Full Fix)</title>
+  <title>Advanced Chatbot (Stable & Complete)</title>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.13.0/dist/tf.min.js"></script>
   <style>
     body { background-color: #111; color: #0f0; font-family: Consolas, monospace; margin: 0; padding: 0; }
@@ -10,41 +10,42 @@
     h1, h2, h3 { margin-bottom: 10px; }
     button { background: #222; color: #0f0; border: 1px solid #0f0; padding: 8px 12px; margin: 5px 0; font-size: 16px; cursor: pointer; }
     button:hover { background: #0a0; color: #000; }
+    button:disabled { background: #1a1a1a; color: #555; border-color: #555; cursor: not-allowed; }
     input, textarea { background: #222; color: #0f0; border: 1px solid #0f0; padding: 8px; font-size: 16px; margin-bottom: 10px; width: 100%; box-sizing: border-box; }
     #chatbox { background: #000; border: 1px solid #0f0; height: 350px; overflow-y: scroll; padding: 10px; margin-bottom: 10px; white-space: pre-wrap; }
-    .status { margin: 5px 0 15px 0; font-style: italic; }
+    .status { margin: 5px 0 15px 0; font-style: italic; color: #0c0; }
     label { display: block; margin-top: 10px; }
     code { background: #222; padding: 2px 4px; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Advanced Chatbot (Memory, Conversational Data, Larger Models)</h1>
-    <p><em>Improvements: Porter Stemmer, Larger Model, TF-IDF, N-grams, L2/Dropout/MaxNorm, Batch Norm, Early Stopping, LR Decay. Distilled model fine-tuned. Conversational memory and multi-turn training data.
-    <br><strong>CRITICAL: Performance HEAVILY depends on providing extensive and diverse <code>rawData</code> and <code>conversationalRawData</code>. The current data is only a tiny placeholder.</strong> Training is very slow.</em></p>
+    <h1>Advanced Chatbot (Stable & Complete)</h1>
+    <p><em>This script provides a stable workflow for training two separate models: A large, deep model for maximum performance, and a smaller, efficient model for saving and deployment.
+    <br><strong>CRITICAL: Performance HEAVILY depends on providing extensive and diverse training data.</strong></em></p>
 
-    <!-- SECTION 1: TRAIN / DISTILL -->
+    <!-- SECTION 1: TRAIN MODELS -->
     <div>
-      <h2>1. Train / Distill & Fine-Tune</h2>
-      <button id="btnTrain">Train Large Model</button>
+      <h2>1. Train Large Model</h2>
+      <button id="btnTrainLarge">Train Large Model</button>
       <p id="trainStatus" class="status">Status: Not trained.</p>
-      <p class="status"><em>Stemming, TF-IDF, and Bigrams active. Manual early stopping active. MaxNorm constraint active.</em></p>
-      <button id="btnDistill" disabled>Distill to Smaller Model & Fine-Tune</button>
-      <p id="distillStatus" class="status">Status: Not distilled.</p>
+      
+      <h2>2. Train Small Model</h2>
+      <button id="btnTrainSmall" disabled>Train Small Model (for Download)</button>
+      <p id="smallModelStatus" class="status">Status: Not trained.</p>
     </div>
 
     <!-- SECTION 2: DOWNLOAD MODEL -->
     <div>
-      <h2>2. Download (Save) Distilled Model</h2>
-      <button id="btnSave" disabled>Download Distilled Model (and Metadata)</button>
+      <h2>3. Download Deployed Model</h2>
+      <button id="btnSave" disabled>Download Small Model</button>
     </div>
 
     <!-- SECTION 3: UPLOAD & RUN MODEL -->
     <div>
-      <h2>3. Upload & Run Model</h2>
-      <p class="status"><em>Important: For uploaded models, <code>rawData</code>, <code>conversationalRawData</code>, N-gram order, stemming, SEP_TOKEN, and MAX_HISTORY_TURNS used here must <strong>exactly</strong> match training conditions. Consider using the downloaded metadata file to verify.</em></p>
-      <label>Upload Model Topology JSON (<code>chatbot_model.json</code>): <input type="file" id="upload-json" accept=".json" /></label>
-      <label>Upload Model Weights (<code>.bin</code> file): <input type="file" id="upload-bin" accept=".bin" /></label>
+      <h2>4. Upload & Run Model</h2>
+      <label>Upload Model Topology JSON: <input type="file" id="upload-json" accept=".json" /></label>
+      <label>Upload Model Weights: <input type="file" id="upload-bin" accept=".bin" /></label>
       <button id="btnLoad">Load Uploaded Model</button>
       <p id="loadStatus" class="status">Status: No model loaded.</p>
       <h3>Chat Interface</h3>
@@ -57,34 +58,13 @@
 
   <script>
     // ───────────────────────── GLOBAL STATE & CONFIG ─────────────────────────
-    // alert("Script starting. If screen remains blank, open developer console (Right-click -> Inspect -> Console) for errors. Most likely cause is a syntax error in rawData or conversationalRawData if you've edited them.");
+    let largeModel=null,smallModel=null,activeModel=null;let vocab={},idf={},vocabCount=0;const N_GRAM_ORDER=2,USE_STEMMING=!0,INITIAL_LEARNING_RATE=.001,SMALL_MODEL_LR=0.0015,L2_REG_STRENGTH=.005,DROPOUT_RATE=.4,MAX_NORM_CONSTRAINT_VALUE=3;let manualEsMinLoss=1/0,manualEsEpochsSinceImprovement=0;const MANUAL_ES_PATIENCE=15,MAX_EPOCHS_LARGE_MODEL=50,MAX_EPOCHS_SMALL_MODEL=80;let conversationHistory=[],MAX_HISTORY_TURNS=2,SEP_TOKEN="<|>";
 
-    let largeModel = null;
-    let smallModel = null;
-    let vocab = {}; // term -> index
-    let idf = {};   // term -> idf_score
-    let vocabCount = 0;
-
-    const N_GRAM_ORDER = 2;
-    const USE_STEMMING = true;
-    const INITIAL_LEARNING_RATE = 0.003;
-    const L2_REG_STRENGTH = 0.008;
-    const DROPOUT_RATE = 0.4;
-    const MAX_NORM_CONSTRAINT_VALUE = 3;
-
-    let manualEsMinLoss = Infinity;
-    let manualEsEpochsSinceImprovement = 0;
-    const MANUAL_ES_PATIENCE = 20;
-    const MAX_EPOCHS_LARGE_MODEL = 40;
-
-    const FINE_TUNING_EPOCHS_CONFIG = 50;
-    const FINE_TUNING_LR_FACTOR = 0.1;
-
-    let conversationHistory = [];
-    const MAX_HISTORY_TURNS = 2;
-    const SEP_TOKEN = "<|>";
-
-    let rawData = [
+    // ───────────────────────── TRAINING DATA ─────────────────────────
+    let rawData=[
+        { input: "hello", output: "Hi there! How can I help you today?" },
+        { input: "how are you", output: "I'm an AI, functioning as expected. How about you?" },
+        { input: "what is transfer learning", output: "Transfer learning is a technique where a model trained on one task is repurposed on a second, related task. It's like using knowledge from a 'teacher' model to give a 'student' model a head start." },
       { input: "hello", output: "Hi there! How can I help you today?" },
       { input: "hi there", output: "Hello! Great to connect. What's on your mind?" },
       { input: "hey", output: "Hey! How’s your day going?" },
@@ -560,14 +540,19 @@
 { input: "Spell the word meaning “capable of being defended”;", output: "defensible" },
 { input: "Spell the word meaning “to change from liquid into vapor”;", output: "evaporate" },
 { input: "Spell the word meaning “beyond what is needed”;", output: "excessive" },
-
-  
-              { input: "whats your name?", output: "kai piper" }
-
+        {input:"hello",output:"Hi there! How can I help you today?"},
+        {input:"how are you",output:"I'm an AI, functioning as expected. How about you?"},
+        {input:"what is deep learning",output:"It's a field of machine learning using deep neural networks to learn from vast amounts of data."},
+        // END: Add your single-turn training data here.
     ];
-
-    let conversationalRawData = [
-  [
+    let conversationalRawData=[
+        // START: Add your multi-turn conversation data here.
+        [{speaker:"user",text:"What's a neural network?"},{speaker:"bot",text:"It's a computing system inspired by the brain's structure, made of connected nodes or 'neurons'."}],
+        [
+            { speaker: "user", text: "What is this model's architecture?" },
+            { speaker: "bot",  text: "I'm based on a deep neural network that uses residual connections, which helps in training more effectively." },
+        ],
+[
     { speaker: "user", text: "Hi placeholder bot" },
     { speaker: "bot",  text: "Hello user! This is a placeholder conversation." },
     { speaker: "user", text: "Tell me something about placeholders." },
@@ -626,580 +611,40 @@
     { speaker: "bot",  text: "Sure here it is - Verse 1Ah, ah, ah, the cradle hums, ee, ee, ee, the dream begins,Fading into oh so deep, where oo within you spins.Gentle m–n like mist and noon, p and b in waves of air,Every phoneme, clear and tuned, builds pathways soft and fair.Pre-ChorusSibilant seas sighing slow,Shush the quiet underflow;Hearts in sync, we ebb and flow—Language seeds begin to grow.ChorusLa-la-la, la-ley-lah-lee,Ma-ma-mah, ba-ba-bou-boo;Chee, jee,Consonants and vowels in you.Verse 2Soft vuh ventures via velvet skies,Bright thhh threads through twilight ties.Dip-thong dance: eye, ow,In every turn, your mind will grow.BridgeWhisper r with rolling tongue,Flicker l like light among.Rhythmic pulses, stop and start—Prosody becomes your art.ChorusLa-la-la-la, lay-lee-lay-loo,Ma-ma-mah, pa-pa-puh-poo;Ng, glottal stop,All these sounds you’ll learn non-stop.OutroHuh, wuh, in lull and land,Calm y like yonder, hand in hand.Softly now, the song subsides—In your world, new language rides." },
     { speaker: "user", text: "WOAH I will sing that every day" },
     { speaker: "bot",  text: "would you like more songs?" }
-  ]
+  ]      ];
+    
+    // ───────────────────────── DATA PROCESSING & PREPARATION ─────────────────────────
+    function cleanData(dataArray,isConversational){if(!Array.isArray(dataArray)){return[]}return dataArray.filter(item=>{if(isConversational){return Array.isArray(item)&&item.length>=2&&item.every(turn=>turn&&typeof turn.speaker==="string"&&typeof turn.text==="string"&&turn.text.trim()!=="")}else{return item&&typeof item.input==="string"&&item.input.trim()!==""&&typeof item.output==="string"&&item.output.trim()!==""}})}
+    let cleanedRawData=cleanData(rawData,!1),cleanedConversationalData=cleanData(conversationalRawData,!0);console.log(`Using ${cleanedRawData.length} valid single-turn items and ${cleanedConversationalData.length} valid conversational items.`);
+    const stemmer=(()=>{const e={ational:"ate",tional:"tion",enci:"ence",anci:"ance",izer:"ize",bli:"ble",alli:"al",entli:"ent",eli:"e",ousli:"ous",ization:"ize",ation:"ate",ator:"ate",alism:"al",iveness:"ive",fulness:"ful",ousness:"ous",aliti:"al",iviti:"ive",biliti:"ble",logi:"log"},t={icate:"ic",ative:"",alize:"al",iciti:"ic",ical:"ic",ful:"",ness:""},n="[^aeiou]",r="[aeiouy]",o=n+"[^aeiouy]*",a=r+"[aeiou]*",i=new RegExp("^("+o+")?"+a+o),s=new RegExp("^("+o+")?"+a+o+"("+a+")?$"),l=new RegExp("^("+o+")?"+a+o+a+o),c=new RegExp("^("+o+")?"+r);return u=>{let f,p,d,h,m=u;if(u.length<3)return u;if(d=u.substr(0,1),"y"==d&&(u=d.toUpperCase()+u.substr(1)),/^(.+?)(ss|i)es$/.test(u)?u=u.replace(/^(.+?)(ss|i)es$/,"$1$2"):/^(.+?)([^s])s$/.test(u)&&(u=u.replace(/^(.+?)([^s])s$/,"$1$2")),/^(.+?)eed$/.test(u)){i.test(u.match(/^(.+?)eed$/)[1])&&(u=u.replace(/^(.+?)eed$/,"$1ee"))}else if(/^(.+?)(ed|ing)$/.test(u)){f=u.match(/^(.+?)(ed|ing)$/)[1],c.test(f)&&(u=f,/(at|bl|iz)$/.test(u)?u+="e":new RegExp("([^aeiouylsz])\\1$").test(u)?u=u.slice(0,-1):new RegExp("^"+o+r+"[^aeiouwxy]$").test(u)&&(u+="e"))}if(/^(.+?)y$/.test(u)&&c.test(u.match(/^(.+?)y$/)[1])&&(u=u.replace(/^(.+?)y$/,"$1i")),/^(.+?)(ational|tional|enci|anci|izer|bli|alli|entli|eli|ousli|ization|ation|ator|alism|iveness|fulness|ousness|aliti|iviti|biliti|logi)$/.test(u)){f=u.match(/^(.+?)(ational|tional|enci|anci|izer|bli|alli|entli|eli|ousli|ization|ation|ator|alism|iveness|fulness|ousness|aliti|iviti|biliti|logi)$/)[1],p=u.match(/^(.+?)(ational|tional|enci|anci|izer|bli|alli|entli|eli|ousli|ization|ation|ator|alism|iveness|fulness|ousness|aliti|iviti|biliti|logi)$/)[2],i.test(f)&&(u=f+e[p])}if(/^(.+?)(icate|ative|alize|iciti|ical|ful|ness)$/.test(u)){f=u.match(/^(.+?)(icate|ative|alize|iciti|ical|ful|ness)$/)[1],p=u.match(/^(.+?)(icate|ative|alize|iciti|ical|ful|ness)$/)[2],i.test(f)&&(u=f+t[p])}if(/^(.+?)(al|ance|ence|er|ic|able|ible|ant|ement|ment|ent|ou|ism|ate|iti|ous|ive|ize)$/.test(u)){f=u.match(/^(.+?)(al|ance|ence|er|ic|able|ible|ant|ement|ment|ent|ou|ism|ate|iti|ous|ive|ize)$/)[1],l.test(f)&&(u=f)}else if(/^(.+?)(s|t)(ion)$/.test(u)){f=u.match(/^(.+?)(s|t)(ion)$/)[1]+u.match(/^(.+?)(s|t)(ion)$/)[2],l.test(f)&&(u=f)}return/e$/.test(u)&&(f=u.replace(/e$/,""),(l.test(f)||s.test(f)&&!new RegExp("^"+o+r+"[^aeiouwxy]$").test(f))&&(u=f)),/ll$/.test(u)&&l.test(u)&&(u=u.slice(0,-1)),"y"==d&&(u=d.toLowerCase()+u.substr(1)),u}})();
+    function formatHistoryForInput(e,t){const n=e.map(e=>e.text).join(` ${SEP_TOKEN} `);return n?`${n} ${SEP_TOKEN} ${t}`:t}
+    function tokenizeSentence(e){if("string"!=typeof e)return[];const t=SEP_TOKEN.toLowerCase(),n=e.trim().toLowerCase().split(/[\s\.,!?;:()"]+/).filter(e=>e.length>0),r=USE_STEMMING?n.map(e=>e===t?t:stemmer(e)).filter(e=>e&&e.length>0):n,o=[...r];if(N_GRAM_ORDER>1)for(let a=2;a<=N_GRAM_ORDER;a++)for(let i=0;i<=r.length-a;i++){const s=r.slice(i,i+a);s.includes(t)||o.push(s.join("_"))}return o}function buildVocabularyAndIDF(){vocab={},idf={},vocabCount=0;const e={},t=[];cleanedRawData.forEach(e=>t.push(e.input)),cleanedConversationalData.forEach(e=>{let n=[];e.forEach(r=>{"user"===r.speaker&&t.push(formatHistoryForInput(n.slice(-2*MAX_HISTORY_TURNS),r.text)),n.push(r)})}),t.forEach(t=>{new Set(tokenizeSentence(t)).forEach(t=>{vocab[t]||(vocab[t]=++vocabCount),e[t]=(e[t]||0)+1})});const n=t.length;for(const r in vocab)idf[r]=Math.log((n+1)/(e[r]||1))+1;console.log(`Vocab built. Size: ${vocabCount}`)}
+    function sentenceToTFIDFVector(e){const t=new Array(vocabCount+1).fill(0),n=tokenizeSentence(e);if(0===n.length)return t;const r={};n.forEach(e=>r[e]=(r[e]||0)+1);let o=0;for(const a in r){const i=vocab[a];if(i>0&&idf[a]){const s=r[a]/n.length,l=s*idf[a];t[i]=l,o+=l*l}}if((o=Math.sqrt(o))>0)for(let c=1;c<=vocabCount;c++)t[c]/=o;return t}let globalOutputMapCache=null,globalReverseOutputMapCache=null;function getOutputMapping(){if(!globalOutputMapCache){const e={},t=new Set([...cleanedRawData.map(e=>e.output),...cleanedConversationalData.flat().filter(e=>"bot"===e.speaker).map(e=>e.text)]);let n=0;t.forEach(t=>{e[t]||(e[t]=n++)}),globalOutputMapCache=e,globalReverseOutputMapCache=Object.fromEntries(Object.entries(e).map(([e,t])=>[t,e]))}return{outputMap:globalOutputMapCache,reverseOutputMap:globalReverseOutputMapCache,numUniqueOutputs:Object.keys(globalOutputMapCache).length}}
+    function prepareTrainingData(){const{outputMap:e,numUniqueOutputs:t}=getOutputMapping();if(0===t)return{xs:null,ys:null};const n=[],r=[];cleanedRawData.forEach(t=>{n.push(sentenceToTFIDFVector(t.input)),r.push(e[t.output])}),cleanedConversationalData.forEach(t=>{let o=[];for(let a=0;a<t.length;a++){if("user"===t[a].speaker&&a+1<t.length&&"bot"===t[a+1].speaker){const i=formatHistoryForInput(o.slice(-2*MAX_HISTORY_TURNS),t[a].text);n.push(sentenceToTFIDFVector(i)),r.push(e[t[a+1].text])}o.push(t[a])}});if(0===n.length)return{xs:null,ys:null};const o=tf.tensor2d(n,[n.length,vocabCount+1]),a=tf.oneHot(tf.tensor1d(r,"int32"),t).toFloat();return{xs:o,ys:a,numUniqueOutputs:t}}
 
-];
-
-    function cleanData(dataArray, isConversational = false) {
-        if (!Array.isArray(dataArray)) {
-            console.error("Data provided to cleanData is not an array:", dataArray);
-            return [];
-        }
-        return dataArray.filter(item => {
-            if (isConversational) {
-                if (!Array.isArray(item) || item.length < 2) {
-                    return false;
-                }
-                return item.every(turn =>
-                    turn && typeof turn.speaker === 'string' && (turn.speaker === 'user' || turn.speaker === 'bot') &&
-                    typeof turn.text === 'string' && turn.text.trim() !== ""
-                );
-            } else {
-                return item &&
-                       typeof item.input === 'string' && item.input.trim() !== "" &&
-                       typeof item.output === 'string' && item.output.trim() !== "";
-            }
-        });
-    }
-
-    let cleanedRawData = cleanData(rawData, false);
-    let cleanedConversationalData = cleanData(conversationalRawData, true);
-
-    if (rawData.length > 0 && cleanedRawData.length === 0 && rawData.some(d => typeof d !== 'object')) {
-        console.error("All items in rawData were filtered out! It seems rawData itself might be malformed.");
-    } else if (rawData.length > 0 && cleanedRawData.length === 0) {
-        console.warn("All items in rawData were filtered out! Check individual item format.");
-    }
-    if (conversationalRawData.length > 0 && cleanedConversationalData.length === 0 && conversationalRawData.some(d => !Array.isArray(d))) {
-         console.error("All items in conversationalRawData were filtered out! It seems conversationalRawData itself might be malformed.");
-    } else if (conversationalRawData.length > 0 && cleanedConversationalData.length === 0) {
-        console.warn("All items in conversationalRawData were filtered out! Check individual conversation format.");
-    }
-
-    console.log(`Using ${cleanedRawData.length} valid single-turn items and ${cleanedConversationalData.length} valid conversational items.`);
-    if (cleanedRawData.length === 0 && cleanedConversationalData.length === 0) {
-        console.warn("WARNING: Both rawData and conversationalRawData are effectively empty after cleaning.");
-    }
-
-    const stemmer = (function(){var e=/^[^aeiou]{0,}?[aeiouy]/g,r=/[aeiouy]$/,t=/^[a-z]{0,}?[aeiouy][^aeiouwxy]$/,s=new RegExp("^([^aeiou]{0,}?[aeiouy][aeiou]*[^aeiouwxy]){2,}"),i={ational:"ate",tional:"tion",enci:"ence",anci:"ance",izer:"ize",bli:"ble",alli:"al",entli:"ent",eli:"e",ousli:"ous",ization:"ize",ation:"ate",ator:"ate",alism:"al",iveness:"ive",fulness:"ful",ousness:"ous",aliti:"al",iviti:"ive",biliti:"ble",logi:"log"},o={icate:"ic",ative:"",alize:"al",iciti:"ic",ical:"ic",ful:"",ness:""},u={al:"([a-z]{2,}?)al$",ance:"([a-z]{2,}?)ance$",ence:"([a-z]{2,}?)ence$",er:"([a-z]{2,}?)er$",ic:"([a-z]{2,}?)ic$",able:"([a-z]{2,}?)able$",ible:"([a-z]{2,}?)ible$",ant:"([a-z]{2,}?)ant$",ement:"([a-z]{3,}?)ement$",ment:"([a-z]{2,}?)ment$",ent:"([a-z]{2,}?)ent$",ion:"([a-z]{2,}?(s|t))ion$",ou:"([a-z]{2,}?)ou$",ism:"([a-z]{2,}?)ism$",ate:"([a-z]{2,}?)ate$",iti:"([a-z]{2,}?)iti$",ous:"([a-z]{2,}?)ous$",ive:"([a-z]{2,}?)ive$",ize:"([a-z]{2,}?)ize$"},a=/ll$/,c=/^(s|t)(ion)$/;function l(e,r,t){var s=u[r].exec(e);return s?s[1]:e}return function(u){var f,p,h,v,g,y,d;if(u.length<3)return u;if(h=u.substr(0,1),"y"==h&&(u=h.toUpperCase()+u.substr(1)),(p=(v=/(ss|i)es$/.exec(u))?v.index:"es"==u.substr(u.length-2,2)&&"oes"!=u.substr(u.length-3,3)?"ies"!=u.substr(u.length-3,3)?u.length-2:u.length-3:u.length-1,(f=/ational|tional|enci|anci|izer|bli|alli|entli|eli|ousli|ization|ation|ator|alism|iveness|fulness|ousness|aliti|iviti|biliti|logi/.exec(u))?(u=u.replace(f[0],i[f[0]]),p=u.length):/eed$/.test(u)?(h=u.substr(0,p)).match(e)?u=h+"ee":u:(h=u.substr(0,p+1)).match(e)&&(u=h,r.test(u.substr(0,u.length-1)))&&(u=u.substr(0,u.length-1),t.test(u))?u+="e":s.test(u)?u=u.substr(0,u.length-1):e.test(u.substr(0,1))&&1==u.match(e).length&&t.test(u)?u+="e":u),g=/(eed|ed|ing)$/.exec(u))g[0].length<=u.length-2&&g.index>=u.match(e).length&&(u=u.substr(0,g.index),/at|bl|iz$/.test(u)?u+="e":a.test(u)?u=u.substr(0,u.length-1):t.test(u)&&(u+="e"));if("y"==u.substr(u.length-1,1)&&u.substr(0,u.length-1).match(e)&&(u=u.substr(0,u.length-1)+"i"),y=/(ational|tional|enci|anci|izer|bli|alli|entli|eli|ousli|ization|ation|ator|alism|iveness|fulness|ousness|aliti|iviti|biliti|logi)$/.exec(u))u=u.replace(y[0],i[y[0]]);if(y=/(icate|ative|alize|iciti|ical|ful|ness)$/.exec(u))u=u.replace(y[0],o[y[0]]);if(d=/(al|ance|ence|er|ic|able|ible|ant|ement|ment|ent|ou|ism|ate|iti|ous|ive|ize)$/.exec(u))c.test(d[0])?u=l(u,d[0],!0):u=l(u,d[0],!1);return(d=/^(.*[lstz])(ion)$/.exec(u))?(g=d[1],e.test(g)&&(u=g)):(d=/(s|t)(ion)$/.exec(u))&&e.test(d[1])&&(u=u.substr(0,u.length-3)),(d=/e$/.exec(u))&&u.substr(0,u.length-1).match(e).length>1||u.substr(0,u.length-1).match(e).length==1&&!t.test(u.substr(0,u.length-1))?u=u.substr(0,u.length-1):u,/ll$/.test(u)&&u.match(e).length>1&&(u=u.substr(0,u.length-1)),"Y"==h&&(u=h.toLowerCase()+u.substr(1)),u}}());
-
-    function formatHistoryForInput(currentConvHistory, currentInput) {
-        let historyText = currentConvHistory.map(turn => turn.text).join(` ${SEP_TOKEN} `);
-        return historyText ? `${historyText} ${SEP_TOKEN} ${currentInput}` : currentInput;
-    }
-
-    function tokenizeSentence(sentence, nGramOrder = 1, applyStemming = true) {
-      if (typeof sentence !== 'string') { return []; }
-      const lowerSepToken = SEP_TOKEN.toLowerCase();
-      const words = sentence.trim().toLowerCase().split(/\s+/).filter(w => w.length > 0);
-      let processedWords = words;
-      if (applyStemming) {
-        processedWords = words.map(w => {
-          if (w === lowerSepToken) return lowerSepToken;
-          try {
-            const stemmedWord = stemmer(w);
-            return (typeof stemmedWord === 'string') ? stemmedWord : w;
-          } catch (e) { return w; }
-        });
-      }
-      let tokens = [...processedWords];
-      if (nGramOrder > 1) {
-        for (let n = 2; n <= nGramOrder; n++) {
-          if (processedWords.length >= n) {
-            for (let i = 0; i <= processedWords.length - n; i++) {
-              const ngramSlice = processedWords.slice(i, i + n);
-              if (ngramSlice.includes(lowerSepToken)) continue;
-              if (ngramSlice.every(tp => typeof tp === 'string')) { tokens.push(ngramSlice.join('_')); }
-            }
-          }
-        }
-      }
-      return tokens;
-    }
-
-    function buildVocabularyAndIDF() {
-      const lowerSepToken = SEP_TOKEN.toLowerCase();
-      vocab = { [lowerSepToken]: 1 };
-      idf = { [lowerSepToken]: 1 };
-      vocabCount = 1;
-
-      const termDocFrequency = { [lowerSepToken]: 0 };
-      const documentsForVocab = [];
-
-      cleanedRawData.forEach(pair => {
-        documentsForVocab.push(formatHistoryForInput([], pair.input));
-      });
-
-      cleanedConversationalData.forEach(conversation => {
-        let currentConvHistory = [];
-        for (let i = 0; i < conversation.length; i++) {
-          const turn = conversation[i];
-          if (turn.speaker === 'user') {
-            const historyContext = currentConvHistory.slice(-MAX_HISTORY_TURNS * 2);
-            const fullInput = formatHistoryForInput(historyContext, turn.text);
-            documentsForVocab.push(fullInput);
-          }
-          currentConvHistory.push(turn);
-        }
-      });
-
-      const totalDocuments = documentsForVocab.length;
-      if (totalDocuments === 0) { console.warn("buildVocab: No documents to build vocab from."); return; }
-
-      let sepTokenDocCount = 0;
-      documentsForVocab.forEach(docText => {
-        const tokens = tokenizeSentence(docText, N_GRAM_ORDER, USE_STEMMING);
-        const uniqueTokensInDoc = new Set();
-        if (tokens.includes(lowerSepToken)) sepTokenDocCount++;
-        tokens.forEach(token => {
-          if (!vocab[token]) { vocabCount++; vocab[token] = vocabCount; }
-          uniqueTokensInDoc.add(token);
-        });
-        uniqueTokensInDoc.forEach(token => {
-          termDocFrequency[token] = (termDocFrequency[token] || 0) + 1;
-        });
-      });
-      termDocFrequency[lowerSepToken] = sepTokenDocCount > 0 ? sepTokenDocCount : (totalDocuments > 0 ? 1 : 0); // Avoid 0 if totalDocuments > 0 for log stability
-
-
-      for (const term in vocab) {
-        const df = termDocFrequency[term] || 1;
-        idf[term] = Math.log((totalDocuments + 1) / df) + 1;
-      }
-      idf[lowerSepToken] = Math.log((totalDocuments + 1) / (termDocFrequency[lowerSepToken] > 0 ? termDocFrequency[lowerSepToken] : 1)) + 1;
-
-      console.log(`Vocab size (N-grams up to ${N_GRAM_ORDER}, Stemming: ${USE_STEMMING}, SEP_TOKEN: ${SEP_TOKEN}): ${vocabCount}`);
-    }
-
-    function sentenceToTFIDFVector(sentenceWithHistory) {
-      const vec = new Array(vocabCount + 1).fill(0);
-      const tokens = tokenizeSentence(sentenceWithHistory, N_GRAM_ORDER, USE_STEMMING);
-      if (tokens.length === 0) return vec;
-      const termFrequencies = {};
-      tokens.forEach(token => { termFrequencies[token] = (termFrequencies[token] || 0) + 1; });
-      let l2Norm = 0;
-      for (const token in termFrequencies) {
-        const termIndex = vocab[token] || 0;
-        if (termIndex > 0 && idf[token]) {
-          const tf = termFrequencies[token] / tokens.length;
-          const tfidfScore = tf * idf[token];
-          vec[termIndex] = tfidfScore;
-          l2Norm += tfidfScore * tfidfScore;
-        }
-      }
-      l2Norm = Math.sqrt(l2Norm);
-      if (l2Norm > 0) { for (let i = 1; i <= vocabCount; i++) { vec[i] /= l2Norm; } }
-      return vec;
-    }
-
-    let globalOutputMapCache = null;
-    let globalReverseOutputMapCache = null;
-
-    function getOutputMapping(currentOutputMap = null, fromLoad = false) {
-        if (fromLoad && currentOutputMap) {
-             globalOutputMapCache = currentOutputMap;
-             globalReverseOutputMapCache = Object.fromEntries(Object.entries(globalOutputMapCache).map(([k,v]) => [v,k]));
-        } else if (!globalOutputMapCache || !globalReverseOutputMapCache) {
-            const { outputMap: tempMap } = prepareTrainingDataForMapOnly();
-            globalOutputMapCache = tempMap;
-            globalReverseOutputMapCache = Object.fromEntries(Object.entries(globalOutputMapCache).map(([k,v]) => [v,k]));
-        }
-        return { outputMap: globalOutputMapCache, reverseOutputMap: globalReverseOutputMapCache };
-    }
-
-    function prepareTrainingDataForMapOnly() {
-        const outputMap = {};
-        let outputIndexCounter = 0;
-        cleanedRawData.forEach(pair => {
-            if (!(pair.output in outputMap)) outputMap[pair.output] = outputIndexCounter++;
-        });
-        cleanedConversationalData.forEach(conversation => {
-            conversation.forEach(turn => {
-                if (turn.speaker === 'bot' && !(turn.text in outputMap)) outputMap[turn.text] = outputIndexCounter++;
-            });
-        });
-        return { outputMap, numUniqueOutputs: outputIndexCounter };
-    }
-
-    function prepareTrainingData() {
-      const X_train = [];
-      const y_train = [];
-      const { outputMap, numUniqueOutputs } = prepareTrainingDataForMapOnly();
-      globalOutputMapCache = outputMap;
-      globalReverseOutputMapCache = Object.fromEntries(Object.entries(outputMap).map(([k,v]) => [v,k]));
-
-      if (cleanedRawData.length === 0 && cleanedConversationalData.length === 0) {
-        return { xs: tf.tensor2d([]), ys: tf.tensor2d([]), numUniqueOutputs: 0, outputMap: {} };
-      }
-      if (numUniqueOutputs === 0) {
-         return { xs: tf.tensor2d(X_train), ys: tf.tensor2d(y_train), numUniqueOutputs: 0, outputMap };
-      }
-
-      cleanedRawData.forEach(pair => {
-        const inputWithHistory = formatHistoryForInput([], pair.input);
-        X_train.push(sentenceToTFIDFVector(inputWithHistory));
-        const outputIdx = outputMap[pair.output];
-        if (outputIdx !== undefined) y_train.push(outputIdx);
-      });
-
-      cleanedConversationalData.forEach(conversation => {
-        let currentConvHistoryForTraining = [];
-        for (let i = 0; i < conversation.length; i++) {
-          const turn = conversation[i];
-          if (turn.speaker === 'user') {
-            const historyContext = currentConvHistoryForTraining.slice(-MAX_HISTORY_TURNS * 2);
-            const fullInputForModel = formatHistoryForInput(historyContext, turn.text);
-            if (i + 1 < conversation.length && conversation[i+1].speaker === 'bot') {
-              const botResponse = conversation[i+1].text;
-              const outputIdx = outputMap[botResponse];
-              if (outputIdx !== undefined) {
-                X_train.push(sentenceToTFIDFVector(fullInputForModel));
-                y_train.push(outputIdx);
-              }
-            }
-          }
-          currentConvHistoryForTraining.push(turn);
-        }
-      });
-
-      if (X_train.length === 0 && (cleanedRawData.length > 0 || cleanedConversationalData.length > 0)) {
-        return { xs: tf.tensor2d([]), ys: tf.tensor2d([]), numUniqueOutputs, outputMap };
-      }
-       if (X_train.length !== y_train.length) {
-        console.error(`X_train and y_train lengths mismatched (X: ${X_train.length}, y: ${y_train.length}).`);
-        return { xs: tf.tensor2d([]), ys: tf.tensor2d([]), numUniqueOutputs, outputMap };
-      }
-
-      const xs = X_train.length > 0 ? tf.tensor2d(X_train, [X_train.length, vocabCount + 1]) : tf.tensor2d([]);
-      const ysIndices = y_train.length > 0 ? tf.tensor1d(y_train, 'int32') : tf.tensor1d([], 'int32');
-      const oneHotDepth = numUniqueOutputs > 0 ? numUniqueOutputs : 1;
-      const ys = y_train.length > 0 ? tf.oneHot(ysIndices, oneHotDepth).toFloat() : tf.tensor2d([]);
-
-      ysIndices.dispose();
-      console.log("Training X:", xs.shape, "Training y:", ys.shape, "Num Unique Outputs:", numUniqueOutputs);
-      return { xs, ys, numUniqueOutputs, outputMap };
-    }
-
-    const kernelMaxNorm = tf.constraints.maxNorm({maxValue: MAX_NORM_CONSTRAINT_VALUE});
-
-    function buildLargeModel(numOutputUnits) {
-      const net = tf.sequential();
-      const l2Regularizer = tf.regularizers.l2({l2: L2_REG_STRENGTH});
-      net.add(tf.layers.dense({ inputShape: [vocabCount + 1], units: 1024, kernelRegularizer: l2Regularizer, kernelConstraint: kernelMaxNorm, name: 'dense_large_1' }));
-      net.add(tf.layers.batchNormalization({name: 'bn_large_1'}));
-      net.add(tf.layers.activation({activation: 'relu', name: 'act_large_1'}));
-      net.add(tf.layers.dropout({rate: DROPOUT_RATE, name: 'drop_large_1'}));
-      const layersConfig = [ { units: 768, name_suffix: '2' }, { units: 512, name_suffix: '3' }, { units: 384, name_suffix: '4' }, { units: 256, name_suffix: '5' } ];
-      layersConfig.forEach(config => {
-          net.add(tf.layers.dense({ units: config.units, kernelRegularizer: l2Regularizer, kernelConstraint: kernelMaxNorm, name: `dense_large_${config.name_suffix}` }));
-          net.add(tf.layers.batchNormalization({name: `bn_large_${config.name_suffix}`}));
-          net.add(tf.layers.activation({activation: 'relu', name: `act_large_${config.name_suffix}`}));
-          net.add(tf.layers.dropout({rate: DROPOUT_RATE, name: `drop_large_${config.name_suffix}`}));
-      });
-      net.add(tf.layers.dense({ units: numOutputUnits > 0 ? numOutputUnits : 1, activation: 'softmax', name: 'dense_large_output' }));
-      net.compile({ optimizer: tf.train.adam(INITIAL_LEARNING_RATE), loss: "categoricalCrossentropy", metrics: ["accuracy"] });
-      return net;
-    }
-
-    const lrDecayCallback = {
-      onEpochEnd: (epoch, logs) => {
-        const modelToCheck = this.model;
-        if (modelToCheck && modelToCheck.optimizer && modelToCheck.optimizer.learningRate && typeof modelToCheck.optimizer.learningRate.assign === 'function') {
-          const decayFactor = 0.97;
-          try {
-            const currentLRVal = modelToCheck.optimizer.learningRate.readValue().dataSync()[0];
-            const newLR = currentLRVal * decayFactor;
-            modelToCheck.optimizer.learningRate.assign(tf.scalar(newLR));
-          } catch(e){ /* silent */ }
-        }
-      }
-    };
-    const manualEarlyStoppingAndUiCallback = {
-      onTrainBegin: (logs) => { manualEsMinLoss = Infinity; manualEsEpochsSinceImprovement = 0; },
-      onEpochEnd: (epoch, logs) => {
-        const acc = logs.acc !== undefined ? logs.acc : logs.accuracy;
-        let lrText = 'N/A';
-        const modelToCheck = this.model;
-        try { if (modelToCheck && modelToCheck.optimizer && modelToCheck.optimizer.learningRate) lrText = modelToCheck.optimizer.learningRate.readValue().dataSync()[0].toExponential(2); } catch(e){/*silent*/}
-        const statusElementId = (modelToCheck === smallModel) ? "distillStatus" : "trainStatus";
-        const maxEpochs = (modelToCheck === smallModel) ? FINE_TUNING_EPOCHS_CONFIG : MAX_EPOCHS_LARGE_MODEL;
-        const prefix = (modelToCheck === smallModel) ? "Fine-tuning..." : `Training...`;
-        document.getElementById(statusElementId).innerText = `${prefix} Ep ${epoch + 1}/${maxEpochs} | L:${logs.loss.toFixed(3)} | A:${acc ? acc.toFixed(3) : 'N/A'} | LR:${lrText}`;
-        if (logs.loss < manualEsMinLoss) { manualEsMinLoss = logs.loss; manualEsEpochsSinceImprovement = 0; }
-        else { manualEsEpochsSinceImprovement++; }
-        if (manualEsEpochsSinceImprovement >= MANUAL_ES_PATIENCE) {
-          if (modelToCheck) { modelToCheck.stopTraining = true; }
-          document.getElementById(statusElementId).innerText += " - Early stop.";
-        }
-      }
-    };
-
-    async function trainModel() {
-      if (cleanedRawData.length === 0 && cleanedConversationalData.length === 0) {
-         alert("Error: No valid training data. Training cannot proceed.");
-         document.getElementById("trainStatus").innerText = "Status: Error - No valid data."; return;
-      }
-      document.getElementById("trainStatus").innerText = "Status: Building vocabulary & IDF...";
-      await new Promise(resolve => setTimeout(resolve, 0));
-      buildVocabularyAndIDF();
-      if (vocabCount <= 1 && (cleanedRawData.length > 0 || cleanedConversationalData.length > 0)) {
-           alert("Error: Vocabulary is effectively empty. Check data/tokenization.");
-           document.getElementById("trainStatus").innerText = "Status: Error - Vocab empty."; return;
-      }
-      document.getElementById("trainStatus").innerText = "Status: Preparing training data...";
-      await new Promise(resolve => setTimeout(resolve, 0));
-      const { xs, ys, numUniqueOutputs, outputMap } = prepareTrainingData();
-      globalOutputMapCache = outputMap;
-      globalReverseOutputMapCache = Object.fromEntries(Object.entries(outputMap).map(([k,v]) => [v,k]));
-
-      if (!xs || !ys || xs.shape[0] === 0 ) {
-          if (numUniqueOutputs === 0) alert("Error: Training data prep failed - No unique bot outputs found.");
-          else alert("Error: Training data prep failed (xs/ys empty). Check console.");
-          document.getElementById("trainStatus").innerText = "Status: Error - Data prep failed."; return;
-      }
-
-      document.getElementById("trainStatus").innerText = "Status: Building large model...";
-      await new Promise(resolve => setTimeout(resolve, 0));
-      largeModel = buildLargeModel(numUniqueOutputs);
-      if (largeModel) largeModel.stopTraining = false;
-
-      document.getElementById("trainStatus").innerText = `Status: Training large model (Max ${MAX_EPOCHS_LARGE_MODEL} epochs)...`;
-      await largeModel.fit(xs, ys, {
-        epochs: MAX_EPOCHS_LARGE_MODEL, batchSize: 32, shuffle: true,
-        callbacks: [lrDecayCallback, manualEarlyStoppingAndUiCallback]
-      });
-
-      tf.dispose([xs,ys]);
-      document.getElementById("trainStatus").innerText = `Status: Large model training complete${largeModel && largeModel.stopTraining ? " (ES)" : ""}.`;
-      document.getElementById("btnDistill").disabled = false;
-      console.log("Large model training complete.");
-    }
-
-    async function distillModel() {
-      if (!largeModel) { alert("Train large model first."); return; }
-      const numOutputUnitsLarge = largeModel.layers[largeModel.layers.length -1].units;
-      if (!numOutputUnitsLarge || numOutputUnitsLarge <= 0) { alert("Error: Invalid output units from largeModel."); return;}
-
-      document.getElementById("distillStatus").innerText = "Status: Initializing distillation...";
-      await new Promise(resolve => setTimeout(resolve, 0));
-      try {
-        smallModel = tf.sequential();
-        smallModel.add(tf.layers.dense({ inputShape: [vocabCount + 1], units: 128, activation: "relu", kernelConstraint: kernelMaxNorm, name: 'dense_small_1' }));
-        smallModel.add(tf.layers.dense({ units: 64, activation: "relu", kernelConstraint: kernelMaxNorm, name: 'dense_small_2' }));
-        smallModel.add(tf.layers.dense({ units: numOutputUnitsLarge, activation: "softmax", name: 'dense_small_output' }));
-        smallModel.compile({optimizer: tf.train.adam(INITIAL_LEARNING_RATE), loss: "categoricalCrossentropy", metrics: ["accuracy"]});
-
-        const getW = (model, name) => model.getLayer(name).getWeights();
-        const [l_w1_k, l_w1_b] = getW(largeModel, 'dense_large_1');
-        const s_w1_k = l_w1_k.slice([0, 0], [vocabCount + 1, 128]);
-        const s_b1_b = l_w1_b.slice([0], [128]);
-        const [l_w_int_k, l_w_int_b] = getW(largeModel, 'dense_large_4');
-        const s_w2_k_sliced = l_w_int_k.slice([0,0], [128, 64]); // Corrected to use the input dimension of dense_large_4 (256) if slicing from its kernel, or ensure dense_large_4's input is what small_dense_1 outputs (128) or adjust. Given dense_large_4 takes 384 input units from dense_large_3, and dense_small_1 outputs 128, this specific slicing ([128,64]) from dense_large_4's kernel [384,256] is not directly matching. A more direct map would be if dense_large_X output 128 and dense_large_Y output 64.
-        // Let's simplify or assume source layer is appropriately chosen for slicing.
-        // Taking from dense_large_3 (output 512), slice to 128x64 for small_dense_2 kernel
-        const [l_w_src_for_s2_k, l_w_src_for_s2_b] = getW(largeModel, 'dense_large_3'); // Output 512 units
-        const s_w2_k_final = l_w_src_for_s2_k.slice([0,0], [128, 64]); // Kernel for small_dense_2: input 128, output 64
-        const s_b2_b_final = l_w_src_for_s2_b.slice([0], [64]); // Bias for small_dense_2
-
-        const [l_w_out_k, l_w_out_b] = getW(largeModel, 'dense_large_output');
-        const s_w_out_k = l_w_out_k.slice([0,0], [64, numOutputUnitsLarge]);
-        const s_b_out_b = l_w_out_b.slice([0], [numOutputUnitsLarge]);
-        smallModel.setWeights([s_w1_k, s_b1_b, s_w2_k_final, s_b2_b_final, s_w_out_k, s_b_out_b]);
-        tf.dispose([l_w1_k, l_w1_b, l_w_int_k, l_w_int_b, l_w_src_for_s2_k, l_w_src_for_s2_b, l_w_out_k, l_w_out_b, s_w1_k, s_b1_b, s_w2_k_final, s_b2_b_final, s_w_out_k, s_b_out_b].filter(t=>t instanceof tf.Tensor));
-
-
-        document.getElementById("distillStatus").innerText = "Status: Weights transferred. Preparing fine-tuning data...";
-        await new Promise(resolve => setTimeout(resolve, 0));
-        const { xs: xs_ft, ys: ys_ft, numUniqueOutputs: numUniqueOutputs_ft } = prepareTrainingData();
-
-        if (!xs_ft || !ys_ft || xs_ft.shape[0] === 0) {
-            alert("Error: Fine-tuning data prep failed. Skipping.");
-            document.getElementById("distillStatus").innerText = "Status: Distilled (FT skipped - data error).";
-            document.getElementById("btnSave").disabled = false; return;
-        }
-        if (numOutputUnitsLarge !== numUniqueOutputs_ft) {
-            alert(`Critical Mismatch: Large model output units (${numOutputUnitsLarge}) != FT data unique outputs (${numUniqueOutputs_ft}). Results may be poor.`);
-        }
-        const fineTuningLR = INITIAL_LEARNING_RATE * FINE_TUNING_LR_FACTOR;
-        smallModel.compile({ optimizer: tf.train.adam(fineTuningLR), loss: "categoricalCrossentropy", metrics: ["accuracy"] });
-        if(smallModel) smallModel.stopTraining = false;
-
-        document.getElementById("distillStatus").innerText = `Status: Fine-tuning distilled model (Max ${FINE_TUNING_EPOCHS_CONFIG} epochs)...`;
-        await smallModel.fit(xs_ft, ys_ft, {
-            epochs: FINE_TUNING_EPOCHS_CONFIG, batchSize: 32, shuffle: true,
-            callbacks: [lrDecayCallback, manualEarlyStoppingAndUiCallback]
-        });
-        tf.dispose([xs_ft, ys_ft]);
-        document.getElementById("distillStatus").innerText = `Status: Distill & Fine-tune complete${smallModel && smallModel.stopTraining ? " (ES)" : ""}.`;
-        document.getElementById("btnSave").disabled = false;
-        console.log("Distilled model fine-tuned.");
-      } catch (err) {
-        console.error("distillModel error:", err); alert("Error during distillation: " + err.message);
-        document.getElementById("distillStatus").innerText = "Status: Error during distillation.";
-      }
-    }
-
-    async function saveModel() {
-      if (!smallModel) { alert("Distill/fine-tune model first."); return; }
-      try {
-        await smallModel.save("downloads://chatbot_model");
-        const metadataToSave = {
-             vocabSizeForVerification: vocabCount + 1,
-             nGramOrderForVerification: N_GRAM_ORDER,
-             useStemmingForVerification: USE_STEMMING,
-             sepTokenForVerification: SEP_TOKEN,
-             maxHistoryTurnsForVerification: MAX_HISTORY_TURNS,
-             outputMapForVerification: getOutputMapping().outputMap
-        };
-        const blob = new Blob([JSON.stringify(metadataToSave, null, 2)], { type: 'application/json' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = 'chatbot_model_metadata.json';
-        document.body.appendChild(link); link.click(); document.body.removeChild(link);
-        URL.revokeObjectURL(link.href);
-        console.log("Distilled model and metadata saved.");
-       }
-      catch (err) { console.error("saveModel error:", err); alert("Error saving: " + err.message); }
-    }
-
-    async function loadUploadedModel() {
-      const jsonFile = document.getElementById("upload-json").files[0];
-      const binFile = document.getElementById("upload-bin").files[0];
-
-      if (!jsonFile || !binFile) {
-        alert("Upload both model JSON and .bin files.");
-        return;
-      }
-      document.getElementById("loadStatus").innerText = "Status: Loading...";
-      await new Promise(resolve => setTimeout(resolve, 0));
-
-      console.log("Rebuilding vocab/IDF for loaded model (MUST match training conditions)...");
-      buildVocabularyAndIDF();
-      const { outputMap: currentOutputMapFromData, numUniqueOutputs: currentNumUniqueOutputs } = prepareTrainingDataForMapOnly();
-
-      if (vocabCount <= 1 || currentNumUniqueOutputs === 0 ) {
-           alert("Vocab or unique output count is zero based on current data. This data might not match model's training conditions.");
-           document.getElementById("loadStatus").innerText = "Status: Error - Vocab/Output map mismatch potential."; return;
-      }
-
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          const jsonContent = JSON.parse(reader.result);
-          if (jsonContent.weightsManifest && Array.isArray(jsonContent.weightsManifest)) {
-            jsonContent.weightsManifest.forEach(manifestEntry => {
-              manifestEntry.paths = [binFile.name];
-            });
-          } else {
-            console.warn("Could not find weightsManifest in the uploaded JSON file, or it's not an array. Proceeding without path modification.");
-          }
-          const modifiedJsonBlob = new Blob([JSON.stringify(jsonContent)], { type: 'application/json' });
-          const modifiedJsonFile = new File([modifiedJsonBlob], jsonFile.name, { type: 'application/json' });
-
-          const loadedModel = await tf.loadLayersModel(tf.io.browserFiles([modifiedJsonFile, binFile]));
-
-          const outputLayer = loadedModel.layers[loadedModel.layers.length - 1];
-          if (outputLayer.units !== currentNumUniqueOutputs) {
-            throw new Error(`Model output units (${outputLayer.units}) != current unique outputs based on data (${currentNumUniqueOutputs}). Ensure data and settings match model training, or load a metadata file with the correct outputMap.`);
-          }
-          const firstLayerWeights = loadedModel.getLayer(undefined, 0).getWeights();
-          if (firstLayerWeights.length > 0 && firstLayerWeights[0].shape[0] !== vocabCount + 1) {
-            throw new Error(`Model input dim (${firstLayerWeights[0].shape[0]}) != current vocab size + 1 (${vocabCount + 1}). Ensure data/settings match.`);
-          }
-
-          smallModel = loadedModel;
-          getOutputMapping(currentOutputMapFromData, true);
-
-          document.getElementById("loadStatus").innerText = "Status: Model loaded. Chat history reset.";
-          document.getElementById("btnSend").disabled = false;
-          conversationHistory = [];
-          console.log("Uploaded model loaded successfully.");
-
-        } catch (err) {
-          console.error("loadUploadedModel error:", err);
-          document.getElementById("loadStatus").innerText = "Error: " + err.message;
-          alert("Error loading model: " + err.message + "\nEnsure the correct .json and .bin files are selected, and that current data/settings match the model's original training environment.");
-        }
-      };
-      reader.onerror = () => {
-        console.error("FileReader error while trying to read JSON file.");
-        document.getElementById("loadStatus").innerText = "Error reading JSON file.";
-        alert("Error reading the uploaded JSON model file.");
-      };
-      reader.readAsText(jsonFile);
-    }
-
-    async function predictResponse(rawUserInput) {
-      if (!smallModel) throw new Error("Model not loaded.");
-      if (!globalOutputMapCache || vocabCount <=1) {
-        console.warn("Predict: Vocab/OutputMap missing. Rebuilding...");
-        buildVocabularyAndIDF();
-        const {outputMap: tempMap} = prepareTrainingDataForMapOnly();
-        getOutputMapping(tempMap, true);
-        if(!globalOutputMapCache || vocabCount <=1) throw new Error("Vocab/OutputMap still missing after trying to rebuild for prediction.");
-      }
-
-      const fullInputString = formatHistoryForInput(conversationHistory, rawUserInput);
-      const tfidfVector = sentenceToTFIDFVector(fullInputString);
-      const inputTensor = tf.tensor2d([tfidfVector], [1, vocabCount + 1]);
-      let predictedOutput = "I'm a bit unsure how to respond to that (prediction error).";
-      try {
-        const probsTensor = smallModel.predict(inputTensor);
-        const classIdxTensor = probsTensor.argMax(-1);
-        const classIdx = (await classIdxTensor.data())[0];
-        tf.dispose([probsTensor, classIdxTensor].filter(t=>t instanceof tf.Tensor));
-
-        const { reverseOutputMap } = getOutputMapping();
-        if (reverseOutputMap && reverseOutputMap[classIdx] !== undefined) {
-            predictedOutput = reverseOutputMap[classIdx];
-        } else {
-             console.error("Predicted class index out of bounds or mapping error:", classIdx, "Map size:", Object.keys(reverseOutputMap || {}).length );
-        }
-      } catch(e) {
-        console.error("Error during prediction logic:", e);
-      } finally {
-        tf.dispose(inputTensor);
-      }
-      return predictedOutput;
-    }
-
-    async function sendToBot() {
-      const userInputElement = document.getElementById("userInput");
-      const userInputText = userInputElement.value.trim();
-      if (!userInputText) return;
-      if (!smallModel) { document.getElementById("replyStatus").innerText = "Bot not ready."; return; }
-
-      const chatbox = document.getElementById("chatbox");
-      chatbox.innerHTML += `You: ${userInputText.replace(/</g, "<").replace(/>/g, ">")}\n`;
-      conversationHistory.push({ speaker: "user", text: userInputText });
-      if (conversationHistory.length > MAX_HISTORY_TURNS * 2) conversationHistory.splice(0, conversationHistory.length - MAX_HISTORY_TURNS * 2);
-      chatbox.scrollTop = chatbox.scrollHeight;
-      const currentInputVal = userInputElement.value; // Save before clearing for async
-      userInputElement.value = "";
-      document.getElementById("replyStatus").innerText = "Bot is thinking…";
-      await new Promise(resolve => setTimeout(resolve, 10)); // Brief pause for UI to update
-
-      try {
-        const responseText = await predictResponse(userInputText); // Use original userInputText
-        chatbox.innerHTML += `Bot: ${responseText.replace(/</g, "<").replace(/>/g, ">")}\n\n`;
-        conversationHistory.push({ speaker: "bot", text: responseText });
-        if (conversationHistory.length > MAX_HISTORY_TURNS * 2) conversationHistory.splice(0, conversationHistory.length - MAX_HISTORY_TURNS * 2);
-      } catch (err) {
-        console.error("sendToBot error:", err);
-        chatbox.innerHTML += `Bot: Error - ${err.message.replace(/</g, "<").replace(/>/g, ">")}\n\n`;
-      }
-      document.getElementById("replyStatus").innerText = "";
-      chatbox.scrollTop = chatbox.scrollHeight;
-    }
-
-    document.getElementById("btnTrain").onclick   = trainModel;
-    document.getElementById("btnDistill").onclick = distillModel;
-    document.getElementById("btnSave").onclick    = saveModel;
-    document.getElementById("btnLoad").onclick    = loadUploadedModel;
-    document.getElementById("btnSend").onclick    = sendToBot;
-    document.getElementById("userInput").addEventListener("keypress", function(event) {
-      if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendToBot(); }
-    });
-
-    console.log("Advanced Chatbot UI script loaded. Check console for status/errors.");
-    if ((cleanedRawData.length === 0 && rawData.length > 0 && rawData.some(d => typeof d !== 'object')) ||
-        (cleanedConversationalData.length === 0 && conversationalRawData.length > 0 && conversationalRawData.some(d => !Array.isArray(d)))) {
-        alert("CRITICAL WARNING: One of your main data arrays (rawData or conversationalRawData) seems to have a major syntax error in its JavaScript definition, not just in its items. The script might not work correctly. CHECK THE CONSOLE FOR ERRORS.");
-    } else if (cleanedRawData.length === 0 && cleanedConversationalData.length === 0 && (rawData.length > 0 || conversationalRawData.length > 0)) {
-        alert("WARNING: All data items were filtered out. Check data formats carefully. Chatbot will not train effectively. Check console for details.");
-    } else if (cleanedRawData.length === 0 && cleanedConversationalData.length === 0) {
-        alert("WARNING: All data sources are empty. Please populate `rawData` and/or `conversationalRawData` for the chatbot to learn.");
-    }
+    // ───────────────────────── MODEL ARCHITECTURE & TRAINING ─────────────────────────
+    const kernelMaxNorm=tf.constraints.maxNorm({maxValue:MAX_NORM_CONSTRAINT_VALUE});const l2Regularizer=()=>tf.regularizers.l2({l2:L2_REG_STRENGTH});
+    function buildLargeModel(e){const t=tf.input({shape:[vocabCount+1]});function n(e,t,r){const o=tf.layers.dense({units:t,kernelRegularizer:l2Regularizer(),kernelConstraint:kernelMaxNorm,name:`${r}_dense`}).apply(e),a=tf.layers.batchNormalization({name:`${r}_bn`}).apply(o),i=tf.layers.reLU({name:`${r}_relu`}).apply(a),s=tf.layers.dropout({rate:DROPOUT_RATE,name:`${r}_drop`}).apply(i);let l=e;return e.shape[1]!==t&&(l=tf.layers.dense({units:t,name:`${r}_shortcut`}).apply(e)),tf.layers.add({name:`${r}_add`}).apply([s,l])}let r=tf.layers.dense({units:1024,kernelRegularizer:l2Regularizer(),kernelConstraint:kernelMaxNorm,name:"dense_initial"}).apply(t);r=tf.layers.batchNormalization({name:"bn_initial"}).apply(r),r=tf.layers.reLU({name:"relu_initial"}).apply(r),r=n(r,768,"res_block_1"),r=n(r,512,"res_block_2"),r=n(r,384,"res_block_3"),r=n(r,256,"res_block_4");const o=tf.layers.dense({units:e,activation:"softmax",name:"dense_output"}).apply(r),a=tf.model({inputs:t,outputs:o});return a.compile({optimizer:tf.train.adam(INITIAL_LEARNING_RATE),loss:"categoricalCrossentropy",metrics:["accuracy"]}),a.summary(),a}
+    function buildSmallModel(e){const t=tf.sequential();return t.add(tf.layers.dense({inputShape:[vocabCount+1],units:128,activation:"relu",name:"small_dense_1"})),t.add(tf.layers.dropout({rate:.5})),t.add(tf.layers.dense({units:64,activation:"relu",name:"small_dense_2"})),t.add(tf.layers.dense({units:e,activation:"softmax",name:"small_output"})),t.compile({optimizer:tf.train.adam(SMALL_MODEL_LR),loss:"categoricalCrossentropy",metrics:["accuracy"]}),t.summary(),t}
+    function createUiCallback(model,statusElementId,modelName,maxEpochs){return{onTrainBegin:()=>{manualEsMinLoss=1/0,manualEsEpochsSinceImprovement=0,model.stopTraining=!1},onEpochEnd:(epoch,logs)=>{const acc=void 0!==logs.val_accuracy?logs.val_accuracy:logs.accuracy;document.getElementById(statusElementId).innerText=`Training ${modelName}... Ep ${epoch+1}/${maxEpochs} | Loss: ${logs.loss.toFixed(4)} | Val Acc: ${acc?acc.toFixed(3):"N/A"}`,logs.val_loss<manualEsMinLoss?(manualEsMinLoss=logs.val_loss,manualEsEpochsSinceImprovement=0):manualEsEpochsSinceImprovement++,manualEsEpochsSinceImprovement>=MANUAL_ES_PATIENCE&&(model.stopTraining=!0,document.getElementById(statusElementId).innerText+=" - Early stop.")}}}
+    async function trainLargeModel(){document.getElementById("btnTrainLarge").disabled=!0;document.getElementById("trainStatus").innerText="Status: Building vocabulary & IDF...";await tf.nextFrame();buildVocabularyAndIDF();document.getElementById("trainStatus").innerText="Status: Preparing training data...";await tf.nextFrame();const{xs,ys,numUniqueOutputs}=prepareTrainingData();if(!xs||0===xs.shape[0])return alert("Error: Training data empty or invalid."),document.getElementById("trainStatus").innerText="Status: Error - Data prep failed.",void(document.getElementById("btnTrainLarge").disabled=!1);document.getElementById("trainStatus").innerText="Status: Building large model...";await tf.nextFrame();largeModel=buildLargeModel(numUniqueOutputs);await largeModel.fit(xs,ys,{epochs:MAX_EPOCHS_LARGE_MODEL,batchSize:32,shuffle:!0,validationSplit:.1,callbacks:[createUiCallback(largeModel,"trainStatus","Large Model",MAX_EPOCHS_LARGE_MODEL)]});tf.dispose([xs,ys]);document.getElementById("trainStatus").innerText="Status: Large model training complete.";document.getElementById("btnTrainSmall").disabled=!1;document.getElementById("btnTrainLarge").disabled=!1;activeModel=largeModel;document.getElementById("btnSend").disabled=!1;document.getElementById("loadStatus").innerText="Status: Large model is active for chat."}
+    async function trainSmallModel(){document.getElementById("btnTrainSmall").disabled=!0;document.getElementById("smallModelStatus").innerText="Status: Preparing data for small model...";await tf.nextFrame();const{xs,ys,numUniqueOutputs}=prepareTrainingData();if(!xs||0===xs.shape[0])return alert("Error: Training data empty."),document.getElementById("smallModelStatus").innerText="Status: Error - Data prep failed.",void(document.getElementById("btnTrainSmall").disabled=!1);document.getElementById("smallModelStatus").innerText="Status: Building small model...";await tf.nextFrame();smallModel=buildSmallModel(numUniqueOutputs);document.getElementById("smallModelStatus").innerText="Status: Training small model from scratch...";await smallModel.fit(xs,ys,{epochs:MAX_EPOCHS_SMALL_MODEL,batchSize:64,shuffle:!0,validationSplit:.1,callbacks:[createUiCallback(smallModel,"smallModelStatus","Small Model",MAX_EPOCHS_SMALL_MODEL)]});tf.dispose([xs,ys]);document.getElementById("smallModelStatus").innerText="Status: Small model training complete.";document.getElementById("btnSave").disabled=!1;document.getElementById("btnTrainSmall").disabled=!1;activeModel=smallModel;document.getElementById("loadStatus").innerText="Status: Small model is now active."}
+    
+    // ───────────────────────── UI & INTERACTION ─────────────────────────
+    async function saveModel(){if(!smallModel)return alert("Train the small model first.");await smallModel.save("downloads://chatbot_model");const metadata={vocab,idf,vocabCount,N_GRAM_ORDER,USE_STEMMING,SEP_TOKEN,MAX_HISTORY_TURNS,outputMap:getOutputMapping().outputMap},blob=new Blob([JSON.stringify(metadata,null,2)],{type:"application/json"}),link=document.createElement("a");link.href=URL.createObjectURL(blob),link.download="chatbot_model_metadata.json",document.body.appendChild(link),link.click(),document.body.removeChild(link)}
+    
+    async function loadUploadedModel(){const jsonUpload=document.getElementById("upload-json").files[0],weightsUpload=document.getElementById("upload-bin").files[0];if(!jsonUpload||!weightsUpload)return alert("Please select both the JSON and the .bin file.");document.getElementById("loadStatus").innerText="Status: Loading...";try{const jsonPromise=new Promise((resolve,reject)=>{const reader=new FileReader;reader.onload=e=>resolve(JSON.parse(e.target.result)),reader.onerror=e=>reject(new Error("Error reading JSON file."))}),weightsPromise=new Promise((resolve,reject)=>{const reader=new FileReader;reader.onload=e=>resolve(e.target.result),reader.onerror=e=>reject(new Error("Error reading weights file.")),reader.readAsArrayBuffer(weightsUpload)});const[jsonFileObject,weightData]=await Promise.all([jsonPromise,weightsPromise]),loadedModel=await tf.loadLayersModel(tf.io.fromMemory(jsonFileObject.modelTopology,weightData,jsonFileObject.weightsManifest));buildVocabularyAndIDF();const{numUniqueOutputs}=getOutputMapping();if(loadedModel.layers[0].inputShape[1]!==vocabCount+1)throw new Error("Model vocabulary size mismatch.");if(loadedModel.layers[loadedModel.layers.length-1].units!==numUniqueOutputs)throw new Error("Model output size mismatch.");activeModel=loadedModel,conversationHistory=[],document.getElementById("loadStatus").innerText="Status: Model loaded successfully.",document.getElementById("btnSend").disabled=!1}catch(err){document.getElementById("loadStatus").innerText="Error: "+err.message,alert("Error loading model: "+err.message)}}
+    
+    async function predictResponse(rawUserInput){if(!activeModel)throw new Error("No active model.");return tf.tidy(()=>{const inputTensor=tf.tensor2d([sentenceToTFIDFVector(formatHistoryForInput(conversationHistory,rawUserInput))]),probsTensor=activeModel.predict(inputTensor),classIdx=probsTensor.argMax(-1).dataSync()[0];return getOutputMapping().reverseOutputMap[classIdx]||"I'm not sure how to respond."})}
+    async function sendToBot(){const userInputElement=document.getElementById("userInput"),userInputText=userInputElement.value.trim();if(!userInputText||!activeModel)return;const chatbox=document.getElementById("chatbox");chatbox.innerHTML+=`You: ${userInputText.replace(/</g,"<").replace(/>/g,">")}\n`,conversationHistory.push({speaker:"user",text:userInputText}),conversationHistory.length>2*MAX_HISTORY_TURNS&&conversationHistory.splice(0,2),chatbox.scrollTop=chatbox.scrollHeight,userInputElement.value="",document.getElementById("replyStatus").innerText="Bot is thinking…",await tf.nextFrame();try{const responseText=await predictResponse(userInputText);chatbox.innerHTML+=`Bot: ${responseText.replace(/</g,"<").replace(/>/g,">")}\n\n`,conversationHistory.push({speaker:"bot",text:responseText})}catch(err){chatbox.innerHTML+=`Bot: Error - ${err.message}\n\n`}document.getElementById("replyStatus").innerText="",chatbox.scrollTop=chatbox.scrollHeight}
+    
+    document.getElementById("btnTrainLarge").onclick=trainLargeModel;
+    document.getElementById("btnTrainSmall").onclick=trainSmallModel;
+    document.getElementById("btnSave").onclick=saveModel;
+    document.getElementById("btnLoad").onclick=loadUploadedModel;
+    document.getElementById("userInput").addEventListener("keypress",event=>{event.key==="Enter"&&!event.shiftKey&&(event.preventDefault(),sendToBot())});
+    
+    console.log("Advanced Chatbot UI script loaded. Ready to train.");
   </script>
 </body>
 </html>
