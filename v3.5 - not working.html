@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Advanced Chatbot (ES5, No Template Strings)</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.13.0/dist/tf.min.js"></script>
+  <style>
+    :root { --bg:#111; --fg:#0f0; --bg-alt:#222; --fg-alt:#0c0; }
+    [data-theme="light"] { --bg:#fff; --fg:#000; --bg-alt:#eee; --fg-alt:#333; }
+    body { background:var(--bg); color:var(--fg); font-family:Consolas,monospace; margin:0; padding:0; }
+    .container{max-width:900px;margin:auto;padding:20px}
+    h1,h2{margin:.5em 0}
+    button,input,select,textarea{background:var(--bg-alt);color:var(--fg);border:1px solid var(--fg);
+      padding:.5em;margin:.5em 0;width:100%;box-sizing:border-box;font-size:1em}
+    button:hover:not(:disabled){background:var(--fg);color:var(--bg)}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    #chatbox{background:var(--bg);border:1px solid var(--fg);height:300px;
+      overflow-y:auto;padding:10px;white-space:pre-wrap}
+    .status{font-style:italic;color:var(--fg-alt)}
+    #progressBar{width:100%;height:8px;background:var(--bg-alt);margin:.5em 0}
+    #progressBar>div{width:0;height:100%;background:var(--fg-alt)}
+    .sidebar{float:right;width:200px}
+    .clear{clear:both}
+  </style>
+</head>
+<body data-theme="dark">
+  <div class="container">
+    <h1>Advanced Chatbot</h1>
+    <div class="sidebar">
+      <button id="btnTheme">Toggle Theme</button>
+      <button id="btnClearMemory">Clear Memory</button>
+      <label>n-Gram Order:
+        <select id="ctrlNgram"><option>1</option><option selected>2</option><option>3</option></select>
+      </label>
+      <label><input type="checkbox" id="ctrlStem" checked/> Use Stemming</label>
+    </div>
+    <div class="clear"></div>
+
+    <h2>1. Train &amp; Distill</h2>
+    <div id="progressBar"><div></div></div>
+    <button id="btnTrain">Train Large Model</button>
+    <p class="status" id="statusTrain">Idle.</p>
+    <button id="btnDistill" disabled>Distill → Small & Fine-Tune</button>
+    <p class="status" id="statusDistill">Not distilled.</p>
+
+    <h2>2. Save &amp; Load</h2>
+    <button id="btnSave" disabled>Download Small Model &amp; Metadata</button>
+    <button id="btnSaveIdx" disabled>Save to IndexedDB</button>
+    <button id="btnLoadIdx">Load from IndexedDB</button>
+    <button id="btnLoadFiles">Load from Files</button>
+    <input type="file" id="fileJSON" accept=".json"/>
+    <input type="file" id="fileBIN" accept=".bin"/>
+    <p class="status" id="statusLoad">No model loaded.</p>
+
+    <h2>3. Chat</h2>
+    <div id="chatbox"></div>
+    <textarea id="userInput" rows="3" placeholder="Type message… (Enter to send)"></textarea>
+    <button id="btnSend" disabled>Send</button>
+    <p class="status" id="statusReply"></p>
+  </div>
+
+  <script>
+  (function(){
+    // STATE & CONFIG
+    var largeModel, smallModel, activeModel;
+    var vocab = {}, idf = {}, vocabCount = 0;
+
+    // ======== PLACE YOUR DATA ARRAYS HERE ========
+    var rawData = [
+      /* e.g.
+      { input: 'hello', output: 'Hi there!' },
+      { input: 'how are you', output: 'I am fine, thanks!' },
+      */
+    ];
+    var conversationalRawData = [
+      /* e.g.
+      [
+        { speaker:'user', text:'How are you?' },
+        { speaker:'bot',  text:'I am fine, thanks!' }
+      ]
+      */
+    ];
+    // =============================================
+
+    var conversationHistory = [];
+    var SEP = '<|>', MAX_HISTORY = 2;
+    var NGRAM = 2, STEM = true;
+    var LR = 0.003, L2 = 0.008, DO = 0.4;
+    var PATIENCE = 20, EPOCH_L = 40, EPOCH_F = 50;
+
+    // HELPERS
+    function el(id){ return document.getElementById(id); }
+    function setStatus(id,msg){ el(id).innerText = msg; }
+    function updProg(p){ el('progressBar').firstChild.style.width = p + '%'; }
+    function saveIdx(){ return smallModel.save('indexeddb://chatbot_small'); }
+    function loadIdx(){ return tf.loadLayersModel('indexeddb://chatbot_small'); }
+
+    // STEMMER & TOKENIZATION
+    function stemmer(w){ return w; } // stub, swap in full Porter if desired
+    function tokenize(txt){
+      var words = txt.trim().toLowerCase()
+        .split(/\s+|[.,!?;:()]/).filter(function(x){return x})
+        .slice(0,200);
+      if(STEM){
+        for(var i=0;i<words.length;i++) words[i]=stemmer(words[i]);
+      }
+      var toks = words.slice();
+      for(var n=2; n<=NGRAM; n++){
+        for(var i=0; i+n<=words.length; i++){
+          toks.push(words.slice(i,i+n).join('_'));
+        }
+      }
+      return toks;
+    }
+    function buildVocab(){
+      vocab = {}; idf = {}; vocabCount = 0;
+      var docs = rawData.map(function(r){return r.input})
+        .concat(conversationalRawData.flatMap(function(conv){
+          var h=[]; return conv.flatMap(function(t){
+            if(t.speaker==='user'){
+              var txt = h.slice(-2).concat(t.text).join(' '+SEP+' ');
+              h.push(t.text);
+              return [txt];
+            }
+            h.push(t.text);
+            return [];
+          });
+        }));
+      var df = {};
+      docs.forEach(function(doc){
+        var u = new Set(tokenize(doc));
+        u.forEach(function(t){
+          if(!vocab[t]) vocab[t] = ++vocabCount;
+          df[t] = (df[t]||0)+1;
+        });
+      });
+      var N = docs.length;
+      for(var t in vocab){
+        idf[t] = Math.log((N+1)/(df[t]||1)) + 1;
+      }
+    }
+    function tfidfVec(txt){
+      var vec = Array(vocabCount+1).fill(0), tfc = {};
+      var toks = tokenize(txt);
+      for(var i=0;i<toks.length;i++){
+        var t = toks[i];
+        if(vocab[t]) tfc[t] = (tfc[t]||0)+1;
+      }
+      var tot=0;
+      for(var k in tfc) tot += tfc[k];
+      var norm=0;
+      for(var k in tfc){
+        var idx=vocab[k], sc=(tfc[k]/tot)*(idf[k]||1);
+        vec[idx]=sc; norm+=sc*sc;
+      }
+      norm = Math.sqrt(norm)||1;
+      for(var j=0;j<vec.length;j++) vec[j]/=norm;
+      return vec;
+    }
+
+    // PREPARE DATA
+    function prepData(){
+      var X=[], Y=[];
+      var outs = Array.from(new Set(
+        rawData.map(function(r){return r.output})
+        .concat(conversationalRawData.flatMap(function(c){
+          return c.filter(function(t){return t.speaker==='bot'})
+                  .map(function(t){return t.text});
+        }))
+      ));
+      var map = {};
+      for(var i=0;i<outs.length;i++) map[outs[i]] = i;
+
+      for(var i=0;i<rawData.length;i++){
+        X.push(tfidfVec(rawData[i].input));
+        Y.push(map[rawData[i].output]);
+      }
+      conversationalRawData.forEach(function(conv){
+        var h=[]; 
+        for(var j=0;j<conv.length-1;j++){
+          if(conv[j].speaker==='user' && conv[j+1].speaker==='bot'){
+            var inp = h.slice(-2).concat(conv[j].text).join(' '+SEP+' ');
+            X.push(tfidfVec(inp));
+            Y.push(map[conv[j+1].text]);
+          }
+          h.push(conv[j].text);
+        }
+      });
+      var xs = tf.tensor2d(X, [X.length, vocabCount+1]);
+      var ys = tf.oneHot(tf.tensor1d(Y, 'int32'), outs.length).toFloat();
+      return { xs: xs, ys: ys, outs: outs };
+    }
+
+    // MODEL BUILDERS
+    function makeLarge(nOut){
+      var m = tf.sequential();
+      var reg = tf.regularizers.l2({l2:L2});
+      m.add(tf.layers.dense({
+        inputShape:[vocabCount+1], units:512, activation:'relu',
+        kernelRegularizer:reg
+      }));
+      m.add(tf.layers.dropout({rate:DO}));
+      [256,128].forEach(function(u){
+        m.add(tf.layers.dense({units:u, activation:'relu', kernelRegularizer:reg}));
+        m.add(tf.layers.dropout({rate:DO}));
+      });
+      m.add(tf.layers.dense({units:nOut, activation:'softmax'}));
+      m.compile({optimizer:tf.train.adam(LR),
+                 loss:'categoricalCrossentropy',
+                 metrics:['accuracy']});
+      return m;
+    }
+    function makeSmall(nOut){
+      var m = tf.sequential();
+      m.add(tf.layers.dense({inputShape:[vocabCount+1], units:128, activation:'relu'}));
+      m.add(tf.layers.dense({units:64, activation:'relu'}));
+      m.add(tf.layers.dense({units:nOut, activation:'softmax'}));
+      m.compile({optimizer:tf.train.adam(LR*0.5),
+                 loss:'categoricalCrossentropy',
+                 metrics:['accuracy']});
+      return m;
+    }
+
+    // CALLBACKS
+    var cbEarly = {
+      onTrainBegin:function(){ cbEarly.min=1e9; cbEarly.c=0; },
+      onEpochEnd:function(ep,logs){
+        updProg((ep+1)/EPOCH_L*100);
+        setStatus('statusTrain','Ep '+(ep+1)+'/'+EPOCH_L+' L:'+logs.loss.toFixed(3));
+        if(logs.loss < cbEarly.min){ cbEarly.min = logs.loss; cbEarly.c=0; }
+        else cbEarly.c++;
+        if(cbEarly.c>=PATIENCE) this.model.stopTraining = true;
+      }
+    };
+
+    // TRAIN & DISTILL
+    el('btnTrain').onclick = function(){
+      NGRAM = +el('ctrlNgram').value;
+      STEM = el('ctrlStem').checked;
+      setStatus('statusTrain','Building vocab…');
+      buildVocab();
+      var pd = prepData();
+      var xs = pd.xs, ys = pd.ys, outs = pd.outs;
+      setStatus('statusTrain','Training large model…');
+      largeModel = makeLarge(outs.length);
+      largeModel.fit(xs, ys, {
+        epochs:EPOCH_L, batchSize:32, validationSplit:0.1,
+        callbacks:[cbEarly]
+      }).then(function(){
+        xs.dispose(); ys.dispose();
+        activeModel = largeModel;
+        setStatus('statusTrain','Large model ready.');
+        el('btnDistill').disabled = false;
+        el('btnSaveIdx').disabled = false;
+      });
+    };
+
+    el('btnDistill').onclick = function(){
+      if(!largeModel) return alert('Train first');
+      setStatus('statusDistill','Distilling…');
+      var pd = prepData();
+      var xs = pd.xs, ys = pd.ys, outs = pd.outs;
+      smallModel = makeSmall(outs.length);
+      var soft = largeModel.predict(xs);
+      smallModel.fit(xs, soft, {
+        epochs:EPOCH_F, batchSize:32, validationSplit:0.1
+      }).then(function(){
+        soft.dispose(); xs.dispose(); ys.dispose();
+        activeModel = smallModel;
+        setStatus('statusDistill','Small model ready.');
+        el('btnSave').disabled = false;
+      });
+    };
+
+    // SAVE & LOAD
+    el('btnSave').onclick = function(){
+      smallModel.save('downloads://chatbot_small').then(function(){
+        var meta = {
+          vocabCount: vocabCount,
+          NGRAM: NGRAM,
+          STEM: STEM,
+          SEP: SEP,
+          MAX_HISTORY: MAX_HISTORY
+        };
+        var blob = new Blob([JSON.stringify(meta,null,2)], {type:'application/json'});
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'chatbot_meta.json';
+        a.click();
+      });
+    };
+    el('btnSaveIdx').onclick = saveIdx;
+    el('btnLoadIdx').onclick = function(){
+      loadIdx().then(function(m){
+        smallModel = m; activeModel = m;
+        setStatus('statusLoad','Loaded from IndexedDB.');
+        el('btnSend').disabled = false;
+      }).catch(function(e){
+        setStatus('statusLoad','IndexedDB error'); console.error(e);
+      });
+    };
+    el('btnLoadFiles').onclick = function(){
+      var jf = el('fileJSON').files[0], bf = el('fileBIN').files[0];
+      if(!jf||!bf) return alert('Select JSON & BIN');
+      setStatus('statusLoad','Loading…');
+      jf.text().then(function(text){
+        var json = JSON.parse(text);
+        json.weightsManifest.forEach(function(m){ m.paths=[bf.name]; });
+        var mod = new File([JSON.stringify(json)], jf.name, {type:'application/json'});
+        tf.loadLayersModel(tf.io.browserFiles([mod,bf]))
+          .then(function(m2){
+            smallModel = m2; activeModel = m2;
+            setStatus('statusLoad','Loaded from files.');
+            el('btnSend').disabled = false;
+          });
+      });
+    };
+
+    // CHAT
+    function chatAdd(w,msg){ el('chatbox').innerText += w + ': ' + msg + '\n'; }
+    el('btnSend').onclick = function(){
+      var txt = el('userInput').value.trim();
+      if(!txt||!activeModel) return;
+      chatAdd('You', txt);
+      conversationHistory.push({speaker:'user',text:txt});
+      if(conversationHistory.length > MAX_HISTORY*2) conversationHistory.shift();
+      el('userInput').value = '';
+      setStatus('statusReply','Bot is thinking…');
+      var inp = [ tfidfVec(conversationHistory.map(function(x){return x.text}).join(' '+SEP+' ')) ];
+      var p = activeModel.predict(tf.tensor2d(inp,[1,vocabCount+1]));
+      p.argMax(-1).data().then(function(arr){
+        var idx = arr[0]; p.dispose();
+        var outs = prepData().outs;
+        chatAdd('Bot', outs[idx]||'…');
+        setStatus('statusReply','');
+      });
+    };
+    el('userInput').addEventListener('keypress', function(e){
+      if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); el('btnSend').click(); }
+    });
+
+    // THEME & MEMORY
+    el('btnTheme').onclick = function(){
+      var t = document.body.getAttribute('data-theme')==='dark'?'light':'dark';
+      document.body.setAttribute('data-theme', t);
+    };
+    el('btnClearMemory').onclick = function(){
+      conversationHistory = [];
+      el('chatbox').innerText = '';
+      setStatus('statusReply','Memory cleared.');
+    };
+
+  })();
+  </script>
+</body>
+</html>
